@@ -6,6 +6,8 @@ dist
 .DS_Store
 *.local
 *.sql
+!supabase/migrations/*.sql
 *.txt
 *.sql
+!supabase/migrations/*.sql
 *.txt
