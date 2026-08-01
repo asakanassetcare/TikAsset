@@ -150,15 +150,16 @@ export default function RoomsPage() {
       if (b.room_id && !bookingByRoom[b.room_id]) bookingByRoom[b.room_id] = b
     }
 
-    // Unpaid invoices sum by room (via contracts.room_id)
+    // Unpaid invoices sum by room
     const { data: invoices } = await supabase
       .from('invoices')
-      .select('total_amount, contracts!inner(room_id)')
+      .select('total_amount, room_id')
       .in('status', ['pending', 'overdue'])
+      .not('room_id', 'is', null)
 
     const overdueByRoom = {}
     for (const inv of invoices ?? []) {
-      const rid = inv.contracts?.room_id
+      const rid = inv.room_id
       if (rid) overdueByRoom[rid] = (overdueByRoom[rid] ?? 0) + Number(inv.total_amount)
     }
 
