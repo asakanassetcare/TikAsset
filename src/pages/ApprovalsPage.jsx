@@ -97,6 +97,7 @@ export default function ApprovalsPage() {
           tenants(full_name),
           payment_recorder:profiles!payment_recorded_by(full_name)
         `)
+        .eq('status', 'waiting')
         .not('slip_url', 'is', null)
         .is('head_approved_at', null)
         .is('head_rejected_at', null)
@@ -177,6 +178,7 @@ export default function ApprovalsPage() {
 
   async function approvePaymentItem(item) {
     setActionId(`${item._kind}-${item.id}`)
+
     const patch = {
       head_approved_by: profile.id,
       head_approved_at: new Date().toISOString(),
@@ -192,10 +194,17 @@ export default function ApprovalsPage() {
       receipt: 'receipts',
     }[item._kind]
 
-    const { error } = await supabase.from(table).update(patch).eq('id', item.id)
+    const { data: updated, error } = await supabase.from(table).update(patch)
+      .eq('id', item.id)
+      .is('head_approved_at', null)
+      .is('head_rejected_at', null)
+      .select('id')
     setActionId(null)
-    if (error) alert(error.message)
-    else fetchAll()
+    if (error) { alert(error.message); return }
+    if (!updated || updated.length === 0) {
+      alert('รายการนี้ถูกอนุมัติหรือปฏิเสธไปแล้ว กรุณารีเฟรช')
+    }
+    fetchAll()
   }
 
   async function approveSettlement(item) {
@@ -230,15 +239,23 @@ export default function ApprovalsPage() {
 
   async function rejectPaymentItem(item, reason) {
     if (item._kind === 'payment') {
-      const { error } = await supabase.from('payments').update({
+      const { data: updated, error } = await supabase.from('payments').update({
         status: 'rejected',
         rejected_at: new Date().toISOString(),
         rejection_reason: reason,
         head_rejected_by: profile.id,
         head_rejected_at: new Date().toISOString(),
         head_rejection_reason: reason,
-      }).eq('id', item.id)
+      })
+        .eq('id', item.id)
+        .eq('status', 'pending_approve')
+        .is('head_approved_at', null)
+        .is('head_rejected_at', null)
+        .select('id')
       if (error) return { error }
+      if (!updated || updated.length === 0) {
+        return { error: { message: 'รายการนี้ถูกอนุมัติหรือปฏิเสธไปแล้ว กรุณารีเฟรช' } }
+      }
 
       const invoice = item.invoices
       if (invoice?.id) {

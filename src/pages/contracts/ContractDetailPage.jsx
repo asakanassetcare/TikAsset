@@ -139,7 +139,7 @@ export default function ContractDetailPage() {
     const [{ data }, { data: initInvRows }, { data: prorateInvRows }] = await Promise.all([
       supabase.from('contracts').select(`
         *,
-        rooms(id, room_number, floor, ownership, base_rent, base_deposit, base_advance, buildings(id, name, project_id, projects(name))),
+        rooms(id, room_number, title_deed_number, floor, ownership, base_rent, base_deposit, base_advance, buildings(id, name, project_id, projects(name))),
         tenants(id, full_name, phone, email, line_user_id),
         profiles!assigned_staff_id(id, full_name)
       `).eq('id', contractId).single(),
@@ -216,10 +216,9 @@ export default function ContractDetailPage() {
 
   function calcProrate(startDate, monthlyRent) {
     if (!startDate || !monthlyRent) return 0
-    const dt = new Date(startDate)
-    const day = dt.getDate()
+    const [year, month, day] = startDate.split('-').map(Number)
     if (day === 1) return 0
-    const daysInMonth = new Date(dt.getFullYear(), dt.getMonth() + 1, 0).getDate()
+    const daysInMonth = new Date(year, month, 0).getDate()
     return Math.ceil((daysInMonth - day + 1) / 30 * Number(monthlyRent))
   }
 
@@ -244,7 +243,7 @@ export default function ContractDetailPage() {
         penalty_amount, penalty_days,
         invoices(
           id, invoice_number, invoice_type, billing_period, total_amount,
-          rooms(room_number, buildings(name)),
+          rooms(room_number, title_deed_number, buildings(name)),
           tenants(full_name, phone)
         )
       `)
@@ -477,17 +476,24 @@ export default function ContractDetailPage() {
 
   async function handleManagerApproveRentAdvance(advance) {
     setManagerApprovingRentAdvanceId(advance.id)
-    const { error } = await supabase.from('rent_advance_payments').update({
+    const { data: updated, error } = await supabase.from('rent_advance_payments').update({
       head_approved_by:       profile.id,
       head_approved_at:       new Date().toISOString(),
       head_rejected_by:       null,
       head_rejected_at:       null,
       head_rejection_reason:  null,
-    }).eq('id', advance.id)
+    })
+      .eq('id', advance.id)
+      .is('head_approved_at', null)
+      .is('head_rejected_at', null)
+      .select('id')
     setManagerApprovingRentAdvanceId(null)
     if (error) {
       alert(error.message)
       return
+    }
+    if (!updated || updated.length === 0) {
+      alert('รายการนี้ถูกอนุมัติหรือปฏิเสธไปแล้ว กรุณารีเฟรช')
     }
     fetchContract()
   }

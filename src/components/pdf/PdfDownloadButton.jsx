@@ -1,14 +1,50 @@
 import { useState } from 'react'
 import { pdf } from '@react-pdf/renderer'
 import { FileDown, Loader2 } from 'lucide-react'
+import { supabase } from '../../lib/supabase'
 
-export default function PdfDownloadButton({ document: doc, filename, label = 'PDF', size = 'sm' }) {
+function isDuplicateStorageError(err) {
+  if (!err) return false
+  const message = String(err.message ?? '').toLowerCase()
+  return err.statusCode === '409' || message.includes('already exists') || message.includes('duplicate')
+}
+
+export default function PdfDownloadButton({
+  document: doc,
+  filename,
+  label = 'PDF',
+  size = 'sm',
+  storageBucket,
+  storagePath,
+}) {
   const [loading, setLoading] = useState(false)
 
   async function handleDownload() {
     setLoading(true)
     try {
-      const blob = await pdf(doc).toBlob()
+      let blob = null
+
+      if (storageBucket && storagePath) {
+        const existing = await supabase.storage.from(storageBucket).download(storagePath)
+        blob = existing.data ?? null
+
+        if (!blob) {
+          if (!doc) throw new Error('ไม่พบไฟล์ PDF ใน storage และไม่มีเอกสารสำหรับสร้างใหม่')
+          const generated = await pdf(doc).toBlob()
+          const { error: uploadErr } = await supabase.storage
+            .from(storageBucket)
+            .upload(storagePath, generated, { contentType: 'application/pdf', upsert: false })
+
+          if (uploadErr && !isDuplicateStorageError(uploadErr)) throw uploadErr
+
+          const stored = await supabase.storage.from(storageBucket).download(storagePath)
+          if (stored.error || !stored.data) throw stored.error ?? new Error('ดาวน์โหลด PDF จาก storage ไม่สำเร็จ')
+          blob = stored.data
+        }
+      } else {
+        blob = await pdf(doc).toBlob()
+      }
+
       const url  = URL.createObjectURL(blob)
       const a    = Object.assign(document.createElement('a'), { href: url, download: filename })
       a.click()

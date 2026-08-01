@@ -154,10 +154,21 @@ export default function MoveOutDetailPage() {
     if (!editForm.bank_account_number.trim()) { setEditSaving(false); setEditErr('กรุณากรอกเลขบัญชี'); return }
     if (!editForm.bank_account_name.trim())   { setEditSaving(false); setEditErr('กรุณากรอกชื่อบัญชี'); return }
 
-    const deposit       = Number(mo.deposit_amount)         || 0
-    const invoiceTotal  = outstandingInvoices.reduce((s, i) => s + Number(i.total_amount), 0)
-    const addonTotal    = pendingAddons.reduce((s, a) => s + Number(a.amount), 0)
-    const outstanding   = invoiceTotal + addonTotal
+    // Re-fetch outstanding at submit time to avoid stale-state race condition
+    const [{ data: freshInv }, { data: freshAddons }] = await Promise.all([
+      supabase.from('invoices')
+        .select('total_amount')
+        .eq('contract_id', mo.contract_id)
+        .in('status', ['pending', 'overdue', 'paid_pending_approve']),
+      supabase.from('contract_addons')
+        .select('amount')
+        .eq('contract_id', mo.contract_id)
+        .eq('billing_cycle', 'one_time')
+        .eq('is_active', true),
+    ])
+    const deposit       = Number(mo.deposit_amount) || 0
+    const outstanding   = (freshInv   ?? []).reduce((s, i) => s + Number(i.total_amount), 0)
+                        + (freshAddons ?? []).reduce((s, a) => s + Number(a.amount),       0)
     const repair        = Number(editForm.repair_cost)       || 0
     const penalty       = Number(editForm.penalty_cost)      || 0
     const other         = Number(editForm.other_deduction)   || 0
@@ -340,17 +351,24 @@ export default function MoveOutDetailPage() {
 
   async function handleManagerApproveSettlement() {
     setManagerApprovingSettlement(true)
-    const { error } = await supabase.from('settlements').update({
+    const { data: updated, error } = await supabase.from('settlements').update({
       head_approved_by:       profile.id,
       head_approved_at:       new Date().toISOString(),
       head_rejected_by:       null,
       head_rejected_at:       null,
       head_rejection_reason:  null,
-    }).eq('id', settlement.id)
+    })
+      .eq('id', settlement.id)
+      .is('head_approved_at', null)
+      .is('head_rejected_at', null)
+      .select('id')
     setManagerApprovingSettlement(false)
     if (error) {
       alert(error.message)
       return
+    }
+    if (!updated || updated.length === 0) {
+      alert('รายการนี้ถูกอนุมัติหรือปฏิเสธไปแล้ว กรุณารีเฟรช')
     }
     fetchAll()
   }

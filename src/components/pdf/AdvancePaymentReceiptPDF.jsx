@@ -88,6 +88,7 @@ export default function AdvancePaymentReceiptPDF({ advancePayment, contract, com
   const amt = Number(ap.amount)
   const docRef = `ADV-${c.contract_number}`
   const keep = (text) => `${text}\u00A0\u00A0`
+  const roomHouseNo = c.rooms?.title_deed_number
 
   return (
     <Document title={`ใบรับเงิน ${docRef}`}>
@@ -148,6 +149,7 @@ export default function AdvancePaymentReceiptPDF({ advancePayment, contract, com
               {keep(`${c.rooms?.buildings?.name ?? ''} ห้อง ${c.rooms?.room_number ?? ''}`)}
             </Text>
             {c.tenants?.phone && <Text style={S.partySub}>{keep(`โทร ${c.tenants.phone}`)}</Text>}
+            {roomHouseNo && <Text style={S.partySub}>{keep(`บ้านเลขที่ ${roomHouseNo}`)}</Text>}
           </View>
           <View style={S.partyBoxLast}>
             <Text style={S.partyLbl}>{keep('อ้างอิงสัญญา')}</Text>

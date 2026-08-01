@@ -1,11 +1,13 @@
 import { useState } from 'react'
-import { Outlet } from 'react-router-dom'
+import { Outlet, useLocation } from 'react-router-dom'
 import Sidebar from './Sidebar'
 import Topbar from './Topbar'
 
 export default function AppShell() {
   const [collapsed,   setCollapsed]   = useState(false)
   const [mobileOpen,  setMobileOpen]  = useState(false)
+  const { pathname } = useLocation()
+  const fullBleed = pathname === '/line-chat'
 
   return (
     <div className="flex h-screen overflow-hidden bg-gray-50">
@@ -30,10 +32,16 @@ export default function AppShell() {
           onMobileToggle={() => setMobileOpen(v => !v)}
         />
 
-        <main className="flex-1 overflow-y-auto">
-          <div className="mx-auto max-w-screen-2xl p-4 sm:p-6">
+        <main className="flex-1 overflow-hidden flex flex-col">
+          {fullBleed ? (
             <Outlet />
-          </div>
+          ) : (
+            <div className="flex-1 overflow-y-auto">
+              <div className="mx-auto max-w-screen-2xl p-4 sm:p-6">
+                <Outlet />
+              </div>
+            </div>
+          )}
         </main>
       </div>
     </div>

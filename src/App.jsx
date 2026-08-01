@@ -41,7 +41,6 @@ import UsersPage from './pages/settings/UsersPage'
 import ActivityLogPage from './pages/settings/ActivityLogPage'
 import ApprovalsPage from './pages/ApprovalsPage'
 import ManagePage from './pages/ManagePage'
-import LineRegisterPage from './pages/line/LineRegisterPage'
 import LineSlipPage from './pages/line/LineSlipPage'
 
 export default function App() {
@@ -51,7 +50,6 @@ export default function App() {
         <SettingsProvider>
           <Routes>
             <Route path="/login" element={<Login />} />
-            <Route path="/line-register" element={<LineRegisterPage />} />
             <Route path="/line-slip" element={<LineSlipPage />} />
             <Route path="/contracts/:contractId/print"     element={<RequireAuth><ContractPrintPage /></RequireAuth>} />
             <Route path="/contracts/:contractId/quotation" element={<RequireAuth><ContractQuotationPage /></RequireAuth>} />

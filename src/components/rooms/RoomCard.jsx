@@ -1,4 +1,4 @@
-import { Copy } from 'lucide-react'
+import { Copy, Trash2 } from 'lucide-react'
 import Badge from '../ui/Badge'
 
 const STATUS_DOT = {
@@ -9,7 +9,7 @@ const STATUS_DOT = {
   blocked:     'bg-red-500',
 }
 
-export default function RoomCard({ room, onClick, onCopy, buildingColor }) {
+export default function RoomCard({ room, onClick, onCopy, onDelete, buildingColor }) {
   const borderColor = room.status_color || buildingColor || undefined
   const dotColor    = room.status_color || buildingColor || undefined
 
@@ -39,6 +39,15 @@ export default function RoomCard({ room, onClick, onCopy, buildingColor }) {
               title="คัดลอกห้อง"
             >
               <Copy className="h-3.5 w-3.5" />
+            </button>
+          )}
+          {onDelete && (
+            <button
+              onClick={e => { e.stopPropagation(); onDelete(room) }}
+              className="rounded p-1 text-gray-300 opacity-0 group-hover:opacity-100 hover:bg-red-50 hover:text-red-500 transition-all"
+              title="ลบห้อง"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
             </button>
           )}
         </div>

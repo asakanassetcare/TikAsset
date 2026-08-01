@@ -78,7 +78,7 @@ export default function DocumentsPage() {
         penalty_amount, penalty_days,
         invoices(
           id, invoice_number, invoice_type, billing_period, total_amount,
-          rooms(room_number, buildings(name)),
+          rooms(room_number, title_deed_number, buildings(name)),
           tenants(full_name, phone),
           contracts(contract_number)
         ),
@@ -94,7 +94,7 @@ export default function DocumentsPage() {
       // Source 3: paid booking deposits
       supabase.from('bookings').select(`
         id, booking_number, deposit_amount, paid_date, bank_name, bank_reference, payment_recorded_at,
-        rooms(room_number, buildings(name)),
+        rooms(room_number, title_deed_number, buildings(name)),
         tenants(full_name, phone),
         recorder:profiles!payment_recorded_by(full_name)
       `).not('paid_date', 'is', null).order('payment_recorded_at', { ascending: false }).limit(500),
@@ -399,6 +399,8 @@ export default function DocumentsPage() {
                           filename={`booking_receipt_${r._raw.booking_number}.pdf`}
                           label="PDF"
                           size="sm"
+                          storageBucket="payment-slips"
+                          storagePath={`booking-receipts/${r._raw.id}.pdf`}
                         />
                       </div>
                     )}

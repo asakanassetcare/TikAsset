@@ -71,6 +71,7 @@ export default function RentAdvancePDF({ advance, contract, company = {} }) {
   const ra  = advance
   const amt = Number(ra.paid_amount)
   const rem = Number(ra.remaining_amount)
+  const roomHouseNo = c.rooms?.title_deed_number
 
   return (
     <Document title={`ใบรับค่าเช่ารับล่วงหน้า ${ra.advance_number}`}>
@@ -133,6 +134,7 @@ export default function RentAdvancePDF({ advance, contract, company = {} }) {
             <Text style={S.partyName}>{c.tenants?.full_name ?? '—'}</Text>
             <Text style={S.partySub}>{k(`${c.rooms?.buildings?.name ?? ''} ห้อง ${c.rooms?.room_number ?? ''}`)}</Text>
             {c.tenants?.phone && <Text style={S.partySub}>{k(`โทร ${c.tenants.phone}`)}</Text>}
+            {roomHouseNo && <Text style={S.partySub}>{k(`บ้านเลขที่ ${roomHouseNo}`)}</Text>}
           </View>
           <View style={S.partyBoxLast}>
             <Text style={S.partyLbl}>{k('รายละเอียด')}</Text>

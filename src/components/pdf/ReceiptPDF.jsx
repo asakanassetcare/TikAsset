@@ -5,6 +5,41 @@ registerFonts()
 
 const S = StyleSheet.create({
   page:       { fontFamily: 'Sarabun', fontSize: 10, color: '#111827', padding: '44 50 38 50' },
+  watermarkMain:  {
+    position: 'absolute',
+    top: 365,
+    left: 30,
+    width: 540,
+    textAlign: 'center',
+    fontSize: 52,
+    fontWeight: 700,
+    color: '#94a3b8',
+    opacity: 0.055,
+    transform: 'rotate(-30deg)',
+  },
+  watermarkVoid: {
+    position: 'absolute',
+    top: 290,
+    left: 30,
+    width: 540,
+    textAlign: 'center',
+    fontSize: 68,
+    fontWeight: 700,
+    color: '#ef4444',
+    opacity: 0.12,
+    transform: 'rotate(-30deg)',
+  },
+  watermarkMicro: {
+    position: 'absolute',
+    left: -22,
+    width: 660,
+    textAlign: 'center',
+    fontSize: 9,
+    fontWeight: 700,
+    color: '#64748b',
+    opacity: 0.07,
+    transform: 'rotate(-30deg)',
+  },
 
   header:     { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 },
   companyCol: { flex: 1, paddingRight: 28 },
@@ -82,7 +117,7 @@ const TYPE_LABEL = {
 
 const k = (t) => `${t}  `
 
-export default function ReceiptPDF({ payment, invoice: inv, company = {} }) {
+export default function ReceiptPDF({ payment, invoice: inv, company = {}, isVoided = false, originalReceiptNumber = null }) {
   if (!payment || !inv) return null
 
   const penaltyAmt = Number(payment.penalty_amount ?? 0)
@@ -91,6 +126,7 @@ export default function ReceiptPDF({ payment, invoice: inv, company = {} }) {
   const docRef     = `RCV-${inv.invoice_number}`
   const room   = inv.rooms
   const bldg   = room?.buildings
+  const roomHouseNo = room?.title_deed_number
   const typeLabel = TYPE_LABEL[inv.invoice_type] ?? inv.invoice_type ?? 'ค่าเช่า'
 
   return (
@@ -111,7 +147,7 @@ export default function ReceiptPDF({ payment, invoice: inv, company = {} }) {
           <View style={S.titleCol}>
             <Text style={S.titleMain}>{k('ใบเสร็จรับเงิน')}</Text>
             <Text style={S.titleEn}>Official Receipt</Text>
-            <Text style={S.titleOrig}>{k('ต้นฉบับ / Original')}</Text>
+            <Text style={S.titleOrig}>{k(isVoided ? 'ยกเลิกแล้ว / VOID' : originalReceiptNumber ? 'ใบแทน / Replacement' : 'ต้นฉบับ / Original')}</Text>
           </View>
         </View>
 
@@ -138,10 +174,16 @@ export default function ReceiptPDF({ payment, invoice: inv, company = {} }) {
               <Text style={S.metaLbl}>{k('วันออกเอกสาร')}</Text>
               <Text style={S.metaVal}>{k(thaiDate(payment.approved_at))}</Text>
             </View>
-            <View style={S.metaRowLast}>
+            <View style={originalReceiptNumber ? S.metaRow : S.metaRowLast}>
               <Text style={S.metaLbl}>{k('อ้างอิงธนาคาร')}</Text>
               <Text style={S.metaVal}>{payment.bank_reference || '—'}</Text>
             </View>
+            {originalReceiptNumber && (
+              <View style={S.metaRowLast}>
+                <Text style={S.metaLbl}>{k('แทนใบเสร็จ')}</Text>
+                <Text style={[S.metaVal, { fontSize: 8.4 }]}>{originalReceiptNumber}</Text>
+              </View>
+            )}
           </View>
         </View>
 
@@ -158,6 +200,7 @@ export default function ReceiptPDF({ payment, invoice: inv, company = {} }) {
             <Text style={S.partyName}>{inv.tenants?.full_name ?? '—'}</Text>
             <Text style={S.partySub}>{k(`${bldg?.name ?? ''} ห้อง ${room?.room_number ?? ''}`)}</Text>
             {inv.tenants?.phone && <Text style={S.partySub}>{k(`โทร ${inv.tenants.phone}`)}</Text>}
+            {roomHouseNo && <Text style={S.partySub}>{k(`บ้านเลขที่ ${roomHouseNo}`)}</Text>}
           </View>
           <View style={S.partyBoxLast}>
             <Text style={S.partyLbl}>{k('อ้างอิงใบแจ้งหนี้')}</Text>
@@ -246,6 +289,16 @@ export default function ReceiptPDF({ payment, invoice: inv, company = {} }) {
             {company.email ? `  ·  ${company.email}` : ''}
           </Text>
         </View>
+
+        <Text fixed style={S.watermarkMain}>Asakan AssetCare</Text>
+        {[245, 430, 615].map(top => (
+          <Text key={top} fixed style={[S.watermarkMicro, { top }]}>
+            {`Asakan AssetCare · ${docRef} · Asakan AssetCare · ${docRef} · Asakan AssetCare`}
+          </Text>
+        ))}
+        {isVoided && (
+          <Text fixed style={S.watermarkVoid}>VOID / ยกเลิก</Text>
+        )}
 
       </Page>
     </Document>

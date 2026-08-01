@@ -3,7 +3,7 @@ import { useParams, useNavigate, Link } from 'react-router-dom'
 import {
   ArrowLeft, DoorOpen, Users, FileText,
   Receipt, LogOut, Wrench, BookOpen, AlertCircle, CheckCircle2,
-  Fingerprint, Plus, Trash2, Tag, RefreshCw, X,
+  Fingerprint, Plus, Trash2, Tag, RefreshCw, X, CalendarDays,
 } from 'lucide-react'
 import { supabase } from '../../lib/supabase'
 import { useAuth } from '../../hooks/useAuth'
@@ -12,9 +12,12 @@ import Badge from '../../components/ui/Badge'
 import Button from '../../components/ui/Button'
 import { PageSpinner } from '../../components/ui/Spinner'
 import { formatThaiDate } from '../../lib/date'
+import Modal from '../../components/ui/Modal'
 import BookingFormModal from '../../components/bookings/BookingFormModal'
 import ContractFormModal from '../../components/contracts/ContractFormModal'
 import MoveOutFormModal from '../../components/move-outs/MoveOutFormModal'
+
+const THAI_MONTH_SHORT = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.']
 
 function localDateString(date = new Date()) {
   return [
@@ -49,9 +52,12 @@ export default function RoomDetailPage() {
   const [addonForm,     setAddonForm]     = useState({ name: '', amount: '', billing_cycle: 'monthly' })
   const [addonAdding,   setAddonAdding]   = useState(false)
   const [addonShowForm, setAddonShowForm] = useState(false)
-  const [bookingOpen,   setBookingOpen]   = useState(false)
-  const [contractOpen,  setContractOpen]  = useState(false)
-  const [moveOutOpen,   setMoveOutOpen]   = useState(false)
+  const [bookingOpen,      setBookingOpen]      = useState(false)
+  const [contractOpen,     setContractOpen]     = useState(false)
+  const [moveOutOpen,      setMoveOutOpen]      = useState(false)
+  const [scheduleOpen,     setScheduleOpen]     = useState(false)
+  const [scheduleInvoices, setScheduleInvoices] = useState([])
+  const [scheduleLoading,  setScheduleLoading]  = useState(false)
 
   useEffect(() => { fetchAll() }, [roomId])
   useEffect(() => { if (roomId) fetchFingerprints() }, [roomId])
@@ -148,11 +154,17 @@ export default function RoomDetailPage() {
       .eq('status', 'waiting')
       .maybeSingle()
     setBooking(bk ?? null)
-    if (bk && rm.status === 'available') {
-      setRoom(prev => prev ? { ...prev, status: 'reserved' } : prev)
-    } else if (!bk && rm.status === 'reserved' && !ct) {
-      setRoom(prev => prev ? { ...prev, status: 'available' } : prev)
-    }
+
+    // Derive display/action status from the current contract/booking so stale
+    // rooms.status cannot show an occupied room as available.
+    const derivedStatus = ct?.status === 'active'
+      ? 'occupied'
+      : ct
+        ? 'reserved'
+        : bk
+          ? (rm.status === 'available' ? 'reserved' : rm.status)
+          : (rm.status === 'reserved' ? 'available' : rm.status)
+    setRoom(prev => prev ? { ...prev, status: derivedStatus } : prev)
 
     // Addons for current contract
     if (ct?.id) {
@@ -248,6 +260,19 @@ export default function RoomDetailPage() {
       await supabase.from('contract_addons').delete().eq('id', id)
     }
     fetchAll()
+  }
+
+  async function openSchedule() {
+    if (!contract?.id) return
+    setScheduleOpen(true)
+    setScheduleLoading(true)
+    const { data } = await supabase
+      .from('invoices')
+      .select('id, invoice_number, billing_period, total_amount, due_date, status')
+      .eq('contract_id', contract.id)
+      .order('due_date')
+    setScheduleInvoices(data ?? [])
+    setScheduleLoading(false)
   }
 
   if (loading) return <PageSpinner />
@@ -635,6 +660,8 @@ export default function RoomDetailPage() {
                 <>
                   <ActionBtn icon={<FileText className="h-4 w-4" />} label={contract.status === 'approved' ? 'บันทึกเข้าพัก' : 'ดูสัญญา'}
                     onClick={() => navigate(`/contracts/${contract?.id}`)} color="blue" />
+                  <ActionBtn icon={<CalendarDays className="h-4 w-4" />} label="ดูตารางชำระเงิน"
+                    onClick={openSchedule} color="gray" />
                   {contract.status === 'active' && (
                     <>
                       {!moveOut && (
@@ -763,6 +790,109 @@ export default function RoomDetailPage() {
       contract={contract}
       onSaved={(moveOutId) => { setMoveOutOpen(false); navigate(`/move-outs/${moveOutId}`) }}
     />
+
+    {/* Payment Schedule Modal */}
+    <Modal
+      open={scheduleOpen}
+      onClose={() => setScheduleOpen(false)}
+      title={`ตารางชำระเงิน — ห้อง ${room?.room_number}`}
+      footer={<button onClick={() => setScheduleOpen(false)}
+        className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">ปิด</button>}
+    >
+      {scheduleLoading ? (
+        <div className="py-8 text-center text-sm text-gray-400">กำลังโหลด...</div>
+      ) : (() => {
+        const startDate = contract?.contract_start_date
+        const endDate   = contract?.contract_end_date
+        if (!startDate) return <p className="py-4 text-center text-sm text-gray-500">ไม่พบข้อมูลวันเริ่มสัญญา</p>
+
+        const startD = new Date(startDate + 'T00:00:00')
+        const endD   = endDate
+          ? new Date(endDate + 'T00:00:00')
+          : new Date(startD.getFullYear() + 1, startD.getMonth() - 1, 28)
+
+        const pad = n => String(n).padStart(2, '0')
+        const contractStartKey = `${startD.getFullYear()}-${pad(startD.getMonth() + 1)}`
+        const contractEndKey   = `${endD.getFullYear()}-${pad(endD.getMonth() + 1)}`
+
+        const invMap = Object.fromEntries(
+          scheduleInvoices.map(inv => {
+            const key = inv.billing_period ?? inv.due_date?.slice(0, 7)
+            return key ? [key, inv] : []
+          }).filter(e => e.length)
+        )
+
+        const years = []
+        for (let y = startD.getFullYear(); y <= endD.getFullYear(); y++) {
+          const months = []
+          for (let m = 1; m <= 12; m++) {
+            const key = `${y}-${pad(m)}`
+            months.push({ key, month: m, outside: key < contractStartKey || key > contractEndKey, invoice: invMap[key] ?? null })
+          }
+          years.push({ year: y, months })
+        }
+
+        return (
+          <div className="flex flex-col gap-5">
+            <div className="flex flex-wrap gap-x-4 gap-y-1.5 text-xs text-gray-500">
+              {[
+                { cls: 'bg-gray-100 border-gray-200',     label: 'นอกสัญญา' },
+                { cls: 'bg-white border-gray-300',         label: 'ยังไม่ถึงรอบ' },
+                { cls: 'bg-yellow-50 border-yellow-300',   label: 'รอชำระ' },
+                { cls: 'bg-red-50 border-red-300',         label: 'เลยกำหนด' },
+                { cls: 'bg-green-50 border-green-300',     label: 'ชำระแล้ว' },
+              ].map(({ cls, label }) => (
+                <span key={label} className="flex items-center gap-1.5">
+                  <span className={`inline-block h-3 w-3 rounded border ${cls}`} />
+                  {label}
+                </span>
+              ))}
+            </div>
+
+            {years.map(({ year, months }) => (
+              <div key={year}>
+                <p className="mb-2 text-xs font-semibold text-gray-400">พ.ศ. {year + 543}</p>
+                <div className="grid grid-cols-4 gap-2">
+                  {months.map(({ key, month, outside, invoice }) => {
+                    let cls = 'rounded-lg border px-1 py-2.5 text-center text-xs font-medium transition-colors select-none'
+                    let canClick = false
+                    if (outside) {
+                      cls += ' bg-gray-50 border-gray-100 text-gray-300'
+                    } else if (!invoice) {
+                      cls += ' bg-white border-gray-200 text-gray-400'
+                    } else if (invoice.status === 'paid' || invoice.status === 'receipt_voided') {
+                      cls += ' bg-green-50 border-green-300 text-green-700 cursor-pointer hover:bg-green-100'
+                      canClick = true
+                    } else if (invoice.status === 'overdue') {
+                      cls += ' bg-red-50 border-red-300 text-red-700 cursor-pointer hover:bg-red-100'
+                      canClick = true
+                    } else if (invoice.status === 'pending') {
+                      cls += ' bg-yellow-50 border-yellow-300 text-yellow-700 cursor-pointer hover:bg-yellow-100'
+                      canClick = true
+                    } else {
+                      cls += ' bg-white border-gray-200 text-gray-400'
+                    }
+                    return (
+                      <button key={key} disabled={!canClick}
+                        onClick={() => { if (canClick) { setScheduleOpen(false); navigate(`/invoices/${invoice.id}`) } }}
+                        className={cls}
+                      >
+                        <span className="block">{THAI_MONTH_SHORT[month - 1]}</span>
+                        {invoice && (
+                          <span className="block mt-0.5 text-[10px] leading-none opacity-75">
+                            ฿{Number(invoice.total_amount).toLocaleString('th-TH', { maximumFractionDigits: 0 })}
+                          </span>
+                        )}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        )
+      })()}
+    </Modal>
     </>
   )
 }

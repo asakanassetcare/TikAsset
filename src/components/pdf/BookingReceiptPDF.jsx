@@ -5,6 +5,29 @@ registerFonts()
 
 const S = StyleSheet.create({
   page:      { fontFamily: 'Sarabun', fontSize: 10, color: '#111827', padding: '44 50 38 50' },
+  watermarkMain: {
+    position: 'absolute',
+    top: 365,
+    left: 30,
+    width: 540,
+    textAlign: 'center',
+    fontSize: 52,
+    fontWeight: 700,
+    color: '#94a3b8',
+    opacity: 0.055,
+    transform: 'rotate(-30deg)',
+  },
+  watermarkMicro: {
+    position: 'absolute',
+    left: -22,
+    width: 660,
+    textAlign: 'center',
+    fontSize: 9,
+    fontWeight: 700,
+    color: '#64748b',
+    opacity: 0.07,
+    transform: 'rotate(-30deg)',
+  },
 
   header:    { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 },
   companyCol:{ flex: 1, paddingRight: 28 },
@@ -80,6 +103,7 @@ export default function BookingReceiptPDF({ booking, company = {} }) {
   const amt = Number(b.deposit_amount)
   const room = b.rooms
   const bldg = room?.buildings
+  const roomHouseNo = room?.title_deed_number
 
   return (
     <Document title={`ใบรับเงินจอง ${b.booking_number}`}>
@@ -142,6 +166,7 @@ export default function BookingReceiptPDF({ booking, company = {} }) {
             <Text style={S.partyName}>{b.tenants?.full_name ?? '—'}</Text>
             <Text style={S.partySub}>{k(`${bldg?.name ?? ''} ห้อง ${room?.room_number ?? ''}`)}</Text>
             {b.tenants?.phone && <Text style={S.partySub}>{k(`โทร ${b.tenants.phone}`)}</Text>}
+            {roomHouseNo && <Text style={S.partySub}>{k(`บ้านเลขที่ ${roomHouseNo}`)}</Text>}
           </View>
           <View style={S.partyBoxLast}>
             <Text style={S.partyLbl}>{k('เลขที่การจอง')}</Text>
@@ -217,6 +242,13 @@ export default function BookingReceiptPDF({ booking, company = {} }) {
             {company.email ? `  ·  ${company.email}` : ''}
           </Text>
         </View>
+
+        <Text fixed style={S.watermarkMain}>Asakan AssetCare</Text>
+        {[245, 430, 615].map(top => (
+          <Text key={top} fixed style={[S.watermarkMicro, { top }]}>
+            {`Asakan AssetCare · ${b.booking_number} · Asakan AssetCare · ${b.booking_number} · Asakan AssetCare`}
+          </Text>
+        ))}
 
       </Page>
     </Document>

@@ -6,6 +6,7 @@ import Select from '../../../components/ui/Select'
 import RoomCard from '../../../components/rooms/RoomCard'
 import RoomFormModal from '../../../components/rooms/RoomFormModal'
 import EmptyState from '../../../components/ui/EmptyState'
+import Modal from '../../../components/ui/Modal'
 import { DoorOpen } from 'lucide-react'
 
 const STATUS_OPTS = [
@@ -31,6 +32,9 @@ export default function RoomsConfigTab() {
   const [roomModal,    setRoomModal]    = useState(false)
   const [editingRoom,  setEditingRoom]  = useState(null)
   const [prefillRoom,  setPrefillRoom]  = useState(null)
+  const [deleteRoom,   setDeleteRoom]   = useState(null)
+  const [deleting,     setDeleting]     = useState(false)
+  const [deleteError,  setDeleteError]  = useState('')
 
   const [search,          setSearch]          = useState('')
   const [filterProject,   setFilterProject]   = useState('')
@@ -87,6 +91,27 @@ export default function RoomsConfigTab() {
   function openEdit(room)   { setEditingRoom(room); setPrefillRoom(null); setRoomModal(true) }
   function openCreate()     { setEditingRoom(null); setPrefillRoom(null); setRoomModal(true) }
   function openClone(room)  { setEditingRoom(null); setPrefillRoom(room); setRoomModal(true) }
+  function canDeleteRoom(room) { return room?.status === 'blocked' || room?.is_rentable === false }
+
+  function openDelete(room) {
+    if (!canDeleteRoom(room)) return
+    setDeleteError('')
+    setDeleteRoom(room)
+  }
+
+  async function confirmDeleteRoom() {
+    if (!deleteRoom) return
+    setDeleting(true)
+    setDeleteError('')
+    const { error } = await supabase.from('rooms').delete().eq('id', deleteRoom.id)
+    setDeleting(false)
+    if (error) {
+      setDeleteError(error.message)
+      return
+    }
+    setDeleteRoom(null)
+    fetchAll()
+  }
 
   return (
     <div>
@@ -143,7 +168,14 @@ export default function RoomsConfigTab() {
       ) : (
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {filtered.map(room => (
-            <RoomCard key={room.id} room={room} onClick={() => openEdit(room)} onCopy={openClone} buildingColor={room.buildings?.card_color} />
+            <RoomCard
+              key={room.id}
+              room={room}
+              onClick={() => openEdit(room)}
+              onCopy={openClone}
+              onDelete={canDeleteRoom(room) ? openDelete : undefined}
+              buildingColor={room.buildings?.card_color}
+            />
           ))}
         </div>
       )}
@@ -155,6 +187,29 @@ export default function RoomsConfigTab() {
         editingRoom={editingRoom}
         prefillRoom={prefillRoom}
       />
+
+      <Modal
+        open={!!deleteRoom}
+        onClose={() => !deleting && setDeleteRoom(null)}
+        title="ยืนยันลบห้อง"
+        size="sm"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setDeleteRoom(null)} disabled={deleting}>ยกเลิก</Button>
+            <Button variant="danger" onClick={confirmDeleteRoom} loading={deleting}>ลบห้อง</Button>
+          </>
+        }
+      >
+        <p className="text-sm text-gray-600">
+          ต้องการลบห้อง <span className="font-semibold text-gray-900">"{deleteRoom?.room_number}"</span> ใช่หรือไม่?
+        </p>
+        <p className="mt-1.5 text-xs text-gray-400">การดำเนินการนี้ไม่สามารถย้อนกลับได้</p>
+        {deleteError && (
+          <div className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600">
+            {deleteError}
+          </div>
+        )}
+      </Modal>
     </div>
   )
 }

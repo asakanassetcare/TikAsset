@@ -64,7 +64,7 @@ export default function Sidebar({ collapsed, mobileOpen, onMobileClose }) {
           supabase.from('rent_advance_payments').select('id', { count: 'exact', head: true })
             .is('head_approved_at', null).is('head_rejected_at', null),
           supabase.from('bookings').select('id', { count: 'exact', head: true })
-            .not('slip_url', 'is', null).is('head_approved_at', null).is('head_rejected_at', null),
+            .eq('status', 'waiting').not('slip_url', 'is', null).is('head_approved_at', null).is('head_rejected_at', null),
           supabase.from('receipts').select('id', { count: 'exact', head: true })
             .eq('status', 'pending').is('head_approved_at', null).is('head_rejected_at', null),
           supabase.from('settlements').select('id', { count: 'exact', head: true })

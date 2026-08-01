@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import { ChevronRight, CreditCard, XCircle, Upload, Loader2, CheckCircle } from 'lucide-react'
+import { ChevronRight, CreditCard, XCircle, Upload, Loader2, CheckCircle, X } from 'lucide-react'
 import { pdf } from '@react-pdf/renderer'
 import { supabase } from '../../lib/supabase'
 import { useAuth } from '../../hooks/useAuth'
@@ -40,14 +40,21 @@ export default function InvoiceDetailPage() {
   const [payments,        setPayments]        = useState([])
   const [bookingDeposit,  setBookingDeposit]  = useState(null)
   const [advancePayments, setAdvancePayments] = useState([])
+  const [relationGroup,   setRelationGroup]   = useState(null)
+  const [relatedInvoices, setRelatedInvoices] = useState([])
+  const [relationCandidates, setRelationCandidates] = useState([])
   const [loading,         setLoading]         = useState(true)
 
   // Payment recording modal
   const [payModal,          setPayModal]          = useState(false)
   const [payForm,           setPayForm]           = useState({ paid_date: '', bank_name: '', bank_reference: '', note: '' })
-  const [slipFile,          setSlipFile]          = useState(null)
-  const [existingSlipPath,  setExistingSlipPath]  = useState(null)
-  const [existingSlipUrl,   setExistingSlipUrl]   = useState(null)
+  const [slipFiles,              setSlipFiles]              = useState([])
+  const [existingSlipPath,       setExistingSlipPath]       = useState(null)
+  const [existingSlipUrl,        setExistingSlipUrl]        = useState(null)
+  const [existingExtraSlipPaths, setExistingExtraSlipPaths] = useState([])
+  const [existingExtraSlipUrls,  setExistingExtraSlipUrls]  = useState([])
+  const [relationEnabled,   setRelationEnabled]   = useState(false)
+  const [selectedRelationInvoiceIds, setSelectedRelationInvoiceIds] = useState([])
   const [paying,            setPaying]            = useState(false)
   const [payError,          setPayError]          = useState('')
 
@@ -76,7 +83,7 @@ export default function InvoiceDetailPage() {
 
   async function fetchAll() {
     const [{ data: inv }, { data: itms }, { data: pmts }] = await Promise.all([
-      supabase.from('invoices').select('*, rooms(room_number, buildings(name)), tenants(full_name, phone), contracts(contract_number, booking_id)').eq('id', invoiceId).single(),
+      supabase.from('invoices').select('*, rooms(room_number, title_deed_number, buildings(name)), tenants(full_name, phone), contracts(contract_number, booking_id)').eq('id', invoiceId).single(),
       supabase.from('invoice_items').select('*').eq('invoice_id', invoiceId).order('display_order'),
       supabase.from('payments').select('*, profiles!recorded_by(full_name)').eq('invoice_id', invoiceId).order('created_at', { ascending: false }),
     ])
@@ -84,6 +91,8 @@ export default function InvoiceDetailPage() {
     setInvoice(inv)
     setItems(itms ?? [])
     setPayments(pmts ?? [])
+    await fetchInvoiceRelations(inv)
+    await fetchRelationCandidates(inv)
 
     if (inv.contract_id) {
       const bookingId = inv.invoice_type === 'contract_initial' ? (inv.contracts?.booking_id ?? null) : null
@@ -103,6 +112,53 @@ export default function InvoiceDetailPage() {
     setLoading(false)
   }
 
+  async function fetchInvoiceRelations(inv) {
+    setRelationGroup(null)
+    setRelatedInvoices([])
+    const { data: item } = await supabase
+      .from('invoice_relation_items')
+      .select('group_id')
+      .eq('invoice_id', inv.id)
+      .maybeSingle()
+    if (!item?.group_id) return
+
+    setRelationGroup({ id: item.group_id })
+    const { data } = await supabase
+      .from('invoice_relation_items')
+      .select(`
+        invoice_id,
+        invoices(id, invoice_number, invoice_type, billing_period, total_amount, status, due_date, rooms(room_number, buildings(name)))
+      `)
+      .eq('group_id', item.group_id)
+      .neq('invoice_id', inv.id)
+
+    setRelatedInvoices((data ?? []).map(row => row.invoices).filter(Boolean))
+  }
+
+  async function fetchRelationCandidates(inv) {
+    setRelationCandidates([])
+    if (!inv.contract_id) return
+
+    const { data: candidates } = await supabase
+      .from('invoices')
+      .select('id, invoice_number, invoice_type, billing_period, total_amount, status, due_date, rooms(room_number, buildings(name))')
+      .eq('contract_id', inv.contract_id)
+      .neq('id', inv.id)
+      .not('status', 'in', '(cancelled,rejected)')
+      .order('issue_date', { ascending: false })
+
+    const ids = (candidates ?? []).map(row => row.id)
+    if (!ids.length) return
+
+    const { data: used } = await supabase
+      .from('invoice_relation_items')
+      .select('invoice_id')
+      .in('invoice_id', ids)
+
+    const usedIds = new Set((used ?? []).map(row => row.invoice_id))
+    setRelationCandidates((candidates ?? []).filter(row => !usedIds.has(row.id)))
+  }
+
   async function openPayModal() {
     const pre = payments.find(p => p.status === 'pending_approve')
     setPayForm({
@@ -111,30 +167,80 @@ export default function InvoiceDetailPage() {
       bank_reference: normalizeSlipReference(pre?.bank_reference),
       note:           pre?.note           ?? '',
     })
-    setSlipFile(null)
+    setSlipFiles([])
     setPayError('')
     setExistingSlipPath(pre?.slip_url ?? null)
     setExistingSlipUrl(null)
+    setExistingExtraSlipPaths(pre?.extra_slips ?? [])
+    setExistingExtraSlipUrls([])
+    setRelationEnabled(false)
+    setSelectedRelationInvoiceIds([])
     if (pre?.slip_url) {
       const { data } = await supabase.storage.from('payment-slips').createSignedUrl(pre.slip_url, 3600)
       setExistingSlipUrl(data?.signedUrl ?? null)
     }
+    if (pre?.extra_slips?.length) {
+      const urls = await Promise.all(
+        pre.extra_slips.map(path =>
+          supabase.storage.from('payment-slips').createSignedUrl(path, 3600).then(r => r.data?.signedUrl ?? null)
+        )
+      )
+      setExistingExtraSlipUrls(urls.filter(Boolean))
+    }
     setPayModal(true)
+  }
+
+  function toggleRelationInvoice(id) {
+    setSelectedRelationInvoiceIds(prev =>
+      prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
+    )
+  }
+
+  async function createInvoiceRelationGroupIfNeeded() {
+    if (!relationEnabled || relationGroup || selectedRelationInvoiceIds.length === 0) return null
+
+    const { data: group, error: groupError } = await supabase
+      .from('invoice_relation_groups')
+      .insert({
+        contract_id: invoice.contract_id,
+        created_from_invoice_id: invoiceId,
+        created_by: profile.id,
+      })
+      .select('id')
+      .single()
+    if (groupError) return groupError
+
+    const rows = [invoiceId, ...selectedRelationInvoiceIds].map(id => ({
+      group_id: group.id,
+      invoice_id: id,
+    }))
+    const { error: itemError } = await supabase
+      .from('invoice_relation_items')
+      .insert(rows)
+    return itemError ?? null
   }
 
   async function handlePayment(e) {
     e.preventDefault()
     if (!payForm.paid_date) { setPayError('กรุณากรอกวันชำระ'); return }
-    if (!slipFile && !existingSlipPath) { setPayError('กรุณาแนบสลิป'); return }
+    if (!slipFiles.length && !existingSlipPath) { setPayError('กรุณาแนบสลิป'); return }
     setPaying(true)
 
-    let slipUrl = existingSlipPath
-    if (slipFile) {
-      const ext = slipFile.name.split('.').pop()
-      const path = `${invoiceId}/slip_${Date.now()}.${ext}`
-      const { data: storageData, error: storageErr } = await supabase.storage.from('payment-slips').upload(path, slipFile, { upsert: false })
+    const uploadedPaths = []
+    for (const file of slipFiles) {
+      const ext = file.name.split('.').pop()
+      const path = `${invoiceId}/slip_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.${ext}`
+      const { data: storageData, error: storageErr } = await supabase.storage.from('payment-slips').upload(path, file, { upsert: false })
       if (storageErr) { setPaying(false); setPayError('อัปโหลดสลิปไม่สำเร็จ: ' + storageErr.message); return }
-      slipUrl = storageData.path
+      uploadedPaths.push(storageData.path)
+    }
+    let slipUrl = existingSlipPath
+    let newExtraSlips = [...existingExtraSlipPaths]
+    if (!slipUrl && uploadedPaths.length > 0) {
+      slipUrl = uploadedPaths[0]
+      newExtraSlips = [...newExtraSlips, ...uploadedPaths.slice(1)]
+    } else {
+      newExtraSlips = [...newExtraSlips, ...uploadedPaths]
     }
 
     const existingReviewable = payments.find(p => p.status === 'pending_approve')
@@ -146,6 +252,7 @@ export default function InvoiceDetailPage() {
         bank_name:      payForm.bank_name || null,
         bank_reference: normalizeSlipReference(payForm.bank_reference) || null,
         slip_url:       slipUrl,
+        extra_slips:    newExtraSlips.length > 0 ? newExtraSlips : null,
         note:           payForm.note.trim() || null,
         recorded_by:    profile.id,
         amount:         grandTotal,
@@ -160,6 +267,7 @@ export default function InvoiceDetailPage() {
         bank_name:      payForm.bank_name || null,
         bank_reference: normalizeSlipReference(payForm.bank_reference) || null,
         slip_url:       slipUrl,
+        extra_slips:    newExtraSlips.length > 0 ? newExtraSlips : null,
         note:           payForm.note.trim() || null,
         status:         'pending_approve',
         recorded_by:    profile.id,
@@ -171,6 +279,8 @@ export default function InvoiceDetailPage() {
     if (!error) {
       const { error: invErr } = await supabase.from('invoices').update({ status: 'paid_pending_approve' }).eq('id', invoiceId)
       if (invErr) { setPaying(false); setPayError('บันทึกสำเร็จแต่อัปเดตสถานะไม่ได้: ' + invErr.message); return }
+      const relationError = await createInvoiceRelationGroupIfNeeded()
+      if (relationError) { setPaying(false); setPayError('บันทึกสำเร็จแต่สร้างกลุ่มใบแจ้งหนี้ที่เกี่ยวข้องไม่ได้: ' + relationError.message); fetchAll(); return }
     }
 
     setPaying(false)
@@ -189,11 +299,21 @@ export default function InvoiceDetailPage() {
       return
     }
     setApprovingId(pmt.id)
-    const { error } = await supabase.from('payments').update({
+    const { data: updated, error } = await supabase.from('payments').update({
       status:      'approved',
       approved_by: profile.id,
       approved_at: new Date().toISOString(),
-    }).eq('id', pmt.id)
+    })
+      .eq('id', pmt.id)
+      .eq('status', 'pending_approve')
+      .not('head_approved_at', 'is', null)
+      .select('id')
+    if (!error && (!updated || updated.length === 0)) {
+      setApprovingId(null)
+      alert('รายการนี้ถูกอนุมัติหรือปฏิเสธไปแล้ว กรุณารีเฟรช')
+      fetchAll()
+      return
+    }
     if (!error) {
       try {
         const blob = await pdf(
@@ -217,16 +337,26 @@ export default function InvoiceDetailPage() {
 
   async function handleManagerApprovePayment(pmt) {
     setManagerApprovingId(pmt.id)
-    const { error } = await supabase.from('payments').update({
+    const { data: updated, error } = await supabase.from('payments').update({
       head_approved_by:       profile.id,
       head_approved_at:       new Date().toISOString(),
       head_rejected_by:       null,
       head_rejected_at:       null,
       head_rejection_reason:  null,
-    }).eq('id', pmt.id)
+    })
+      .eq('id', pmt.id)
+      .eq('status', 'pending_approve')
+      .is('head_approved_at', null)
+      .is('head_rejected_at', null)
+      .select('id')
     setManagerApprovingId(null)
     if (error) {
       alert(error.message)
+      return
+    }
+    if (!updated || updated.length === 0) {
+      alert('รายการนี้ถูกอนุมัติหรือปฏิเสธไปแล้ว กรุณารีเฟรช')
+      fetchAll()
       return
     }
     fetchAll()
@@ -235,11 +365,20 @@ export default function InvoiceDetailPage() {
   async function handleRejectPayment() {
     if (!rejectReason.trim()) { setRejectErr('กรุณากรอกเหตุผล'); return }
     setRejecting(true)
-    const { error } = await supabase.from('payments').update({
+    const { data: updated, error } = await supabase.from('payments').update({
       status:           'rejected',
       rejected_at:      new Date().toISOString(),
       rejection_reason: rejectReason.trim(),
-    }).eq('id', rejectTarget.id)
+    })
+      .eq('id', rejectTarget.id)
+      .eq('status', 'pending_approve')
+      .select('id')
+    if (!error && (!updated || updated.length === 0)) {
+      setRejecting(false)
+      setRejectErr('รายการนี้ถูกอนุมัติหรือปฏิเสธไปแล้ว กรุณารีเฟรช')
+      fetchAll()
+      return
+    }
     if (!error) {
       const today = new Date().toISOString().slice(0, 10)
       const restoredStatus = invoice.due_date && addDays(invoice.due_date, 4) < today ? 'overdue' : 'pending'
@@ -499,6 +638,37 @@ export default function InvoiceDetailPage() {
           </div>
         </Card>
 
+        {relatedInvoices.length > 0 && (
+          <Card className="lg:col-span-3">
+            <div className="mb-3">
+              <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">ใบแจ้งหนี้ที่เกี่ยวข้องกัน</p>
+              <p className="mt-1 text-xs text-gray-400">ใช้สำหรับอ้างอิงการตรวจสลิปเท่านั้น ไม่ได้ตัดยอดอัตโนมัติ</p>
+            </div>
+            <div className="flex flex-col gap-2">
+              {relatedInvoices.map(rel => (
+                <Link
+                  key={rel.id}
+                  to={`/invoices/${rel.id}`}
+                  className="flex items-center justify-between rounded-lg border border-gray-100 px-3 py-2.5 hover:border-blue-200 hover:bg-blue-50 transition-colors"
+                >
+                  <div>
+                    <p className="text-sm font-medium text-gray-900">{rel.invoice_number}</p>
+                    <p className="text-xs text-gray-400">
+                      {TYPE_LABEL[rel.invoice_type] ?? rel.invoice_type}
+                      {rel.billing_period ? ` · ${rel.billing_period}` : ''}
+                      {rel.rooms?.room_number ? ` · ห้อง ${rel.rooms.room_number}` : ''}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span className="text-sm font-semibold text-gray-900">฿{Number(rel.total_amount).toLocaleString('th-TH')}</span>
+                    <Badge variant={rel.status} />
+                  </div>
+                </Link>
+              ))}
+            </div>
+          </Card>
+        )}
+
         {/* Payments */}
         {(payments.length > 0 || items.some(it => Number(it.amount) < 0)) && (
           <Card className="lg:col-span-3">
@@ -570,6 +740,12 @@ export default function InvoiceDetailPage() {
                         if (data?.signedUrl) window.open(data.signedUrl, '_blank')
                       }} className="text-xs text-blue-600 hover:underline">ดูสลิป</button>
                     )}
+                    {(pmt.extra_slips ?? []).map((path, i) => (
+                      <button key={i} onClick={async () => {
+                        const { data } = await supabase.storage.from('payment-slips').createSignedUrl(path, 3600)
+                        if (data?.signedUrl) window.open(data.signedUrl, '_blank')
+                      }} className="text-xs text-blue-600 hover:underline">สลิป {i + 2}</button>
+                    ))}
                     <Badge variant={pmt.status} />
                     {canManagerApprove && pmt.status === 'pending_approve' && !pmt.head_approved_at && !pmt.head_rejected_at && (
                       <Button size="sm" icon={<CheckCircle className="h-3.5 w-3.5" />}
@@ -631,29 +807,101 @@ export default function InvoiceDetailPage() {
               maxLength={4}
               placeholder={SLIP_REFERENCE_PLACEHOLDER} />
           </div>
-          <div className="flex flex-col gap-1">
+          <div className="flex flex-col gap-2">
             <label className="text-sm font-medium text-gray-700">
               แนบสลิป {!existingSlipPath && <span className="text-red-500">*</span>}
             </label>
-            {existingSlipUrl && !slipFile && (
-              <div className="flex items-center gap-3 rounded-lg border border-gray-200 bg-gray-50 p-2">
-                <img
-                  src={existingSlipUrl}
-                  alt="slip"
-                  className="h-16 w-16 cursor-pointer rounded border object-cover hover:opacity-80"
-                  onClick={() => window.open(existingSlipUrl, '_blank')}
-                />
-                <p className="text-xs text-gray-500">สลิปที่แนบไว้แล้ว<br />เลือกไฟล์ใหม่เพื่อเปลี่ยน</p>
+            {(existingSlipUrl || existingExtraSlipUrls.length > 0) && (
+              <div className="flex flex-wrap items-center gap-2">
+                {existingSlipUrl && (
+                  <button type="button" onClick={() => window.open(existingSlipUrl, '_blank')}
+                    className="h-16 w-16 shrink-0 overflow-hidden rounded border border-gray-200 hover:opacity-80">
+                    <img src={existingSlipUrl} alt="slip" className="h-full w-full object-cover" />
+                  </button>
+                )}
+                {existingExtraSlipUrls.map((url, i) => (
+                  <button key={i} type="button" onClick={() => window.open(url, '_blank')}
+                    className="h-16 w-16 shrink-0 overflow-hidden rounded border border-gray-200 hover:opacity-80">
+                    <img src={url} alt={`slip ${i + 2}`} className="h-full w-full object-cover" />
+                  </button>
+                ))}
+                <p className="text-xs text-gray-500">สลิปที่แนบไว้แล้ว<br />คลิกเพื่อดู</p>
+              </div>
+            )}
+            {slipFiles.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {slipFiles.map((file, i) => (
+                  <div key={i} className="relative h-16 w-16 shrink-0">
+                    {file.type.startsWith('image/') ? (
+                      <img src={URL.createObjectURL(file)} alt="" className="h-full w-full rounded border border-gray-200 object-cover" />
+                    ) : (
+                      <div className="flex h-full w-full items-center justify-center rounded border border-gray-200 bg-gray-50 text-[10px] text-gray-500">PDF</div>
+                    )}
+                    <button type="button" onClick={() => setSlipFiles(fs => fs.filter((_, j) => j !== i))}
+                      className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-white">
+                      <X className="h-2.5 w-2.5" />
+                    </button>
+                  </div>
+                ))}
               </div>
             )}
             <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-dashed border-gray-300 px-4 py-3 hover:border-blue-400 transition-colors">
               <Upload className="h-4 w-4 text-gray-400" />
               <span className="text-sm text-gray-500">
-                {slipFile ? slipFile.name : existingSlipPath ? 'เปลี่ยนสลิป (ไม่บังคับ)' : 'เลือกไฟล์ภาพ / PDF'}
+                {existingSlipPath ? 'เพิ่มสลิป (ไม่บังคับ)' : 'เลือกไฟล์ภาพ / PDF'}
               </span>
-              <input type="file" accept="image/*,application/pdf" className="hidden"
-                onChange={e => setSlipFile(e.target.files?.[0] ?? null)} />
+              <input type="file" accept="image/*,application/pdf" multiple className="hidden"
+                onChange={e => setSlipFiles(fs => [...fs, ...Array.from(e.target.files ?? [])])} />
             </label>
+          </div>
+          <div className="rounded-lg border border-gray-100 bg-gray-50 px-3 py-3">
+            {relationGroup ? (
+              <p className="text-sm text-gray-500">ใบแจ้งหนี้นี้อยู่ในกลุ่มใบแจ้งหนี้ที่เกี่ยวข้องกันแล้ว</p>
+            ) : (
+              <>
+                <label className="flex cursor-pointer items-start gap-2">
+                  <input
+                    type="checkbox"
+                    checked={relationEnabled}
+                    onChange={e => {
+                      setRelationEnabled(e.target.checked)
+                      if (!e.target.checked) setSelectedRelationInvoiceIds([])
+                    }}
+                    className="mt-1 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                  />
+                  <span>
+                    <span className="block text-sm font-medium text-gray-700">เกี่ยวข้องกับใบแจ้งหนี้อื่น</span>
+                    <span className="block text-xs text-gray-400">ใช้เพื่ออ้างอิงการตรวจสลิปเท่านั้น ไม่ได้ตัดยอดอัตโนมัติ</span>
+                  </span>
+                </label>
+                {relationEnabled && (
+                  <div className="mt-3 flex flex-col gap-2">
+                    {relationCandidates.length === 0 ? (
+                      <p className="text-xs text-gray-400">ไม่มีใบแจ้งหนี้อื่นของสัญญานี้ที่เลือกได้</p>
+                    ) : relationCandidates.map(rel => (
+                      <label key={rel.id} className="flex cursor-pointer items-center justify-between gap-3 rounded-lg border border-gray-100 bg-white px-3 py-2">
+                        <span className="flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={selectedRelationInvoiceIds.includes(rel.id)}
+                            onChange={() => toggleRelationInvoice(rel.id)}
+                            className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                          />
+                          <span>
+                            <span className="block text-sm font-medium text-gray-800">{rel.invoice_number}</span>
+                            <span className="block text-xs text-gray-400">
+                              {TYPE_LABEL[rel.invoice_type] ?? rel.invoice_type}
+                              {rel.billing_period ? ` · ${rel.billing_period}` : ''}
+                            </span>
+                          </span>
+                        </span>
+                        <span className="text-sm font-semibold text-gray-900">฿{Number(rel.total_amount).toLocaleString('th-TH')}</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
           </div>
           <Textarea label="หมายเหตุ" rows={2} value={payForm.note}
             onChange={e => setPayForm(p => ({ ...p, note: e.target.value }))} />

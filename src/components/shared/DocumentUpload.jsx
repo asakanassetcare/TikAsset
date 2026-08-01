@@ -24,12 +24,17 @@ export default function DocumentUpload({ refTable, refId, bucket, allowedTypes, 
   const [loading,      setLoading]      = useState(true)
   const [uploading,    setUploading]    = useState(false)
   const [selectedType, setSelectedType] = useState(allowedTypes?.[0] ?? 'other')
+  const [displayName,  setDisplayName]  = useState('')
   const [dragOver,     setDragOver]     = useState(false)
   const fileInputRef = useRef(null)
 
   useEffect(() => {
     if (refId && refId !== 'new') fetchDocs()
   }, [refId])
+
+  useEffect(() => {
+    if (selectedType !== 'other') setDisplayName('')
+  }, [selectedType])
 
   async function fetchDocs() {
     const { data } = await supabase
@@ -47,16 +52,24 @@ export default function DocumentUpload({ refTable, refId, bucket, allowedTypes, 
     const path = `${refId}/${selectedType}_${Date.now()}.${ext}`
     const { data: sd, error: se } = await supabase.storage.from(bucket).upload(path, file, { upsert: false })
     if (se) { alert('อัปโหลดไม่สำเร็จ: ' + se.message); setUploading(false); return }
-    await supabase.from('documents').insert({
+    const { error: insertError } = await supabase.from('documents').insert({
       ref_table:       refTable,
       ref_id:          refId,
       doc_type:        selectedType,
+      display_name:    selectedType === 'other' ? (displayName.trim() || null) : null,
       file_url:        sd.path,
       file_name:       file.name,
       file_size_bytes: file.size,
       mime_type:       file.type,
       uploaded_by:     profile.id,
     })
+    if (insertError) {
+      await supabase.storage.from(bucket).remove([sd.path])
+      alert('บันทึกข้อมูลเอกสารไม่สำเร็จ: ' + insertError.message)
+      setUploading(false)
+      return
+    }
+    setDisplayName('')
     setUploading(false)
     fetchDocs()
   }
@@ -74,7 +87,7 @@ export default function DocumentUpload({ refTable, refId, bucket, allowedTypes, 
     e.preventDefault(); setDragOver(false)
     const file = e.dataTransfer.files?.[0]
     if (file) uploadFile(file)
-  }, [selectedType, refId])
+  }, [selectedType, displayName, refId])
 
   async function openSignedUrl(filePath) {
     const { data } = await supabase.storage.from(bucket).createSignedUrl(filePath, 3600)
@@ -82,7 +95,7 @@ export default function DocumentUpload({ refTable, refId, bucket, allowedTypes, 
   }
 
   async function handleDelete(doc) {
-    if (!confirm(`ลบไฟล์ "${doc.file_name}" ?\n\nการลบไม่สามารถกู้คืนได้`)) return
+    if (!confirm(`ลบไฟล์ "${doc.display_name || doc.file_name}" ?\n\nการลบไม่สามารถกู้คืนได้`)) return
     await supabase.storage.from(bucket).remove([doc.file_url])
     await supabase.from('documents').delete().eq('id', doc.id)
     fetchDocs()
@@ -123,6 +136,17 @@ export default function DocumentUpload({ refTable, refId, bucket, allowedTypes, 
                   </select>
                 </div>
               )}
+              {selectedType === 'other' && (
+                <div className="mx-auto mt-3 max-w-xs" onClick={e => e.stopPropagation()}>
+                  <input
+                    type="text"
+                    value={displayName}
+                    onChange={e => setDisplayName(e.target.value)}
+                    placeholder="ตั้งชื่อเอกสาร เช่น รูปเฟอร์ประกอบ"
+                    className="h-9 w-full rounded-lg border border-gray-200 bg-white px-3 text-center text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+              )}
             </>
           )}
         </div>
@@ -153,7 +177,7 @@ export default function DocumentUpload({ refTable, refId, bucket, allowedTypes, 
               <div className="flex items-center gap-3">
                 <FileText className="h-5 w-5 shrink-0 text-gray-400" />
                 <div>
-                  <p className="text-sm font-medium text-gray-800">{DOC_TYPE_LABEL[doc.doc_type] ?? doc.doc_type}</p>
+                  <p className="text-sm font-medium text-gray-800">{doc.display_name || (DOC_TYPE_LABEL[doc.doc_type] ?? doc.doc_type)}</p>
                   <p className="text-xs text-gray-400">
                     {doc.file_name}
                     {doc.file_size_bytes ? ` · ${(doc.file_size_bytes / 1024).toFixed(0)} KB` : ''}

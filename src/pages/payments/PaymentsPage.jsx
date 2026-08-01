@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo, useRef } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
-import { Search, X, CheckCircle, XCircle, BookCheck, ArrowRight, ImageIcon, Link2 } from 'lucide-react'
+import { Search, X, CheckCircle, XCircle, BookCheck, ArrowRight, ImageIcon, Link2, Ban, RotateCcw } from 'lucide-react'
 import { pdf } from '@react-pdf/renderer'
 import { supabase } from '../../lib/supabase'
 import { useAuth } from '../../hooks/useAuth'
@@ -120,14 +120,44 @@ export default function PaymentsPage() {
   const [rejectLineLoading, setRejectLineLoading]  = useState(false)
   const [rejectLineErr,     setRejectLineErr]      = useState('')
 
+  // Void receipt (misc receipts table)
+  const [voidModal,         setVoidModal]          = useState(null)
+  const [voidType,          setVoidType]           = useState('document_only')
+  const [voidReason,        setVoidReason]         = useState('')
+  const [voidLoading,       setVoidLoading]        = useState(false)
+  const [voidErr,           setVoidErr]            = useState('')
+  // Replacement receipt
+  const [replaceModal,      setReplaceModal]       = useState(null)
+  const [replaceAmount,     setReplaceAmount]      = useState('')
+  const [replaceDesc,       setReplaceDesc]        = useState('')
+  const [replacePayer,      setReplacePayer]       = useState('')
+  const [replacePayments,   setReplacePayments]    = useState([])
+  const [replacePaymentId,  setReplacePaymentId]   = useState('')
+  const [replaceLoading,    setReplaceLoading]     = useState(false)
+  const [replaceErr,        setReplaceErr]         = useState('')
+  // Void section (invoice payments)
+  const canApproveVoid      = ['super_admin', 'executive'].includes(role)
+  const [voidPayments,      setVoidPayments]       = useState([])
+  const [voidPaymentModal,  setVoidPaymentModal]   = useState(null)
+  const [voidPaymentType,   setVoidPaymentType]    = useState('document_only')
+  const [voidPaymentReason, setVoidPaymentReason]  = useState('')
+  const [voidPaymentLoading,setVoidPaymentLoading] = useState(false)
+  const [voidPaymentErr,    setVoidPaymentErr]     = useState('')
+  const [rejectVoidModal,   setRejectVoidModal]    = useState(null)
+  const [rejectVoidReason,  setRejectVoidReason]   = useState('')
+  const [rejectVoidLoading, setRejectVoidLoading]  = useState(false)
+  const [rejectVoidErr,     setRejectVoidErr]      = useState('')
+  const [voidActionId,      setVoidActionId]       = useState(null)
+  const [voidSearch,        setVoidSearch]         = useState('')
+
   useEffect(() => { fetchAll() }, [])
 
   async function fetchAll() {
-    const [{ data: pData }, { data: rData }, { data: bkData }, { data: raData }, { data: sData }, { data: projData }, { data: bData }, { data: lsData }] = await Promise.all([
+    const [{ data: pData }, { data: rData }, { data: bkData }, { data: raData }, { data: sData }, { data: projData }, { data: bData }, { data: lsData }, { data: vpData }] = await Promise.all([
       supabase.from('payments').select(`
         *, 
         invoices(id, invoice_number, invoice_type, total_amount, due_date, status,
-          rooms(room_number, building_id, buildings(id, name)),
+          rooms(room_number, title_deed_number, building_id, buildings(id, name)),
           tenants(full_name, line_user_id)),
         recorder:profiles!recorded_by(full_name),
         accounting_recorder:profiles!accounting_recorded_by(full_name)
@@ -166,6 +196,18 @@ export default function PaymentsPage() {
         invoices(id, invoice_number),
         reviewer:profiles!reviewed_by(full_name)
       `).order('created_at', { ascending: false }).limit(100),
+      supabase.from('payments').select(`
+        id, amount, paid_date, bank_reference, bank_name, status,
+        approved_at, void_status, void_type, void_reason,
+        void_requested_at, void_rejected_reason,
+        requester:profiles!void_requested_by(full_name),
+        invoices(id, invoice_number, invoice_type, total_amount,
+          rooms(room_number, building_id, buildings(id, name)),
+          tenants(full_name))
+      `)
+        .eq('status', 'approved')
+        .order('approved_at', { ascending: false })
+        .limit(300),
     ])
 
     const map = {}
@@ -179,6 +221,7 @@ export default function PaymentsPage() {
     setRentAdvances((raData ?? []).map(r => ({ ...r, _type: 'rent_advance' })))
     setSettlements(sData ?? [])
     setLineSlips(lsData ?? [])
+    setVoidPayments(vpData ?? [])
     if (projData?.length && !filterProject) setFilterProject(projData[0].id)
     setLoading(false)
   }
@@ -208,12 +251,22 @@ export default function PaymentsPage() {
       return
     }
     setActionLoading(pmt.id)
-    const { error } = await supabase.from('payments').update({
+    const { data: updated, error } = await supabase.from('payments').update({
       status: 'approved',
       approved_by: profile.id,
       approved_at: new Date().toISOString(),
-    }).eq('id', pmt.id)
+    })
+      .eq('id', pmt.id)
+      .eq('status', 'pending_approve')
+      .not('head_approved_at', 'is', null)
+      .select('id')
     if (error) { setActionLoading(null); alert(error.message); return }
+    if (!updated || updated.length === 0) {
+      setActionLoading(null)
+      alert('รายการนี้ถูกอนุมัติหรือปฏิเสธไปแล้ว กรุณารีเฟรช')
+      fetchAll()
+      return
+    }
 
     // Generate PDF ใบเสร็จ → upload → ส่ง LINE
     let receiptUrl = null
@@ -251,11 +304,20 @@ export default function PaymentsPage() {
   async function handleReject() {
     if (!rejectReason.trim()) { setRejectErr('กรุณากรอกเหตุผล'); return }
     setRejecting(true)
-    const { error } = await supabase.from('payments').update({
+    const { data: updated, error } = await supabase.from('payments').update({
       status: 'rejected',
       rejected_at: new Date().toISOString(),
       rejection_reason: rejectReason.trim(),
-    }).eq('id', rejectTarget.id)
+    })
+      .eq('id', rejectTarget.id)
+      .eq('status', 'pending_approve')
+      .select('id')
+    if (!error && (!updated || updated.length === 0)) {
+      setRejecting(false)
+      setRejectErr('รายการนี้ถูกอนุมัติหรือปฏิเสธไปแล้ว กรุณารีเฟรช')
+      fetchAll()
+      return
+    }
     if (!error && rejectTarget.invoices?.id) {
       const today = new Date().toISOString().slice(0, 10)
       const restoredStatus = rejectTarget.invoices.due_date && addDays(rejectTarget.invoices.due_date, 4) < today ? 'overdue' : 'pending'
@@ -347,6 +409,124 @@ export default function PaymentsPage() {
     setRejectLineLoading(false)
     if (error) { setRejectLineErr(error.message); return }
     setRejectLineModal(null)
+    fetchAll()
+  }
+
+  function openVoidModal(receipt) {
+    setVoidModal(receipt)
+    setVoidType('document_only')
+    setVoidReason('')
+    setVoidErr('')
+  }
+
+  async function handleVoidRequest() {
+    if (!voidReason.trim()) { setVoidErr('กรุณากรอกเหตุผล'); return }
+    setVoidLoading(true)
+    const { error } = await supabase.rpc('request_receipt_void', {
+      p_receipt_id:  voidModal.id,
+      p_void_type:   voidType,
+      p_void_reason: voidReason.trim(),
+    })
+    setVoidLoading(false)
+    if (error) { setVoidErr(error.message); return }
+    setVoidModal(null)
+    fetchAll()
+  }
+
+  async function openReplaceModal(receipt) {
+    setReplaceModal(receipt)
+    setReplaceAmount(String(receipt.amount))
+    setReplaceDesc((receipt.description ?? '') + ' (แก้ไข)')
+    setReplacePayer(receipt.payer_name ?? '')
+    setReplacePaymentId('')
+    setReplaceErr('')
+    setReplacePayments([])
+
+    if (receipt.void_type === 'payment_reversal') {
+      // Fetch new approved payments for the same invoice
+      const { data: oldPmt } = await supabase.from('payments')
+        .select('invoice_id').eq('id', receipt.ref_id).single()
+      if (oldPmt?.invoice_id) {
+        const { data } = await supabase.from('payments')
+          .select('id, amount, paid_date, bank_reference')
+          .eq('invoice_id', oldPmt.invoice_id)
+          .eq('status', 'approved')
+          .order('created_at', { ascending: false })
+        setReplacePayments(data ?? [])
+      }
+    }
+  }
+
+  async function handleIssueReplacement() {
+    setReplaceLoading(true)
+    setReplaceErr('')
+    const refId   = replaceModal.void_type === 'payment_reversal' ? replacePaymentId : replaceModal.ref_id
+    const refTable = replaceModal.ref_table
+    if (replaceModal.void_type === 'payment_reversal' && !replacePaymentId) {
+      setReplaceErr('กรุณาเลือกการชำระใหม่ที่ถูกต้อง')
+      setReplaceLoading(false)
+      return
+    }
+    const { error } = await supabase.rpc('issue_replacement_receipt', {
+      p_original_receipt_id: replaceModal.id,
+      p_amount:              Number(replaceAmount),
+      p_description:         replaceDesc.trim(),
+      p_payer_name:          replacePayer.trim() || null,
+      p_ref_table:           refTable,
+      p_ref_id:              refId,
+      p_building_id:         replaceModal.building_id,
+    })
+    setReplaceLoading(false)
+    if (error) { setReplaceErr(error.message); return }
+    setReplaceModal(null)
+    fetchAll()
+  }
+
+  function openVoidPaymentModal(pmt) {
+    setVoidPaymentModal(pmt)
+    setVoidPaymentType('document_only')
+    setVoidPaymentReason('')
+    setVoidPaymentErr('')
+  }
+
+  async function handleVoidPaymentRequest() {
+    if (!voidPaymentReason.trim()) { setVoidPaymentErr('กรุณากรอกเหตุผล'); return }
+    setVoidPaymentLoading(true)
+    const { error } = await supabase.rpc('request_payment_void', {
+      p_payment_id:  voidPaymentModal.id,
+      p_void_type:   voidPaymentType,
+      p_void_reason: voidPaymentReason.trim(),
+    })
+    setVoidPaymentLoading(false)
+    if (error) { setVoidPaymentErr(error.message); return }
+    setVoidPaymentModal(null)
+    fetchAll()
+  }
+
+  async function handleApprovePaymentVoid(pmtId) {
+    setVoidActionId(pmtId)
+    const { error } = await supabase.rpc('approve_payment_void', { p_payment_id: pmtId })
+    setVoidActionId(null)
+    if (error) alert(error.message)
+    else fetchAll()
+  }
+
+  function openRejectVoidModal(pmt) {
+    setRejectVoidModal(pmt)
+    setRejectVoidReason('')
+    setRejectVoidErr('')
+  }
+
+  async function handleRejectPaymentVoid() {
+    if (!rejectVoidReason.trim()) { setRejectVoidErr('กรุณากรอกเหตุผล'); return }
+    setRejectVoidLoading(true)
+    const { error } = await supabase.rpc('reject_payment_void', {
+      p_payment_id:      rejectVoidModal.id,
+      p_rejection_reason: rejectVoidReason.trim(),
+    })
+    setRejectVoidLoading(false)
+    if (error) { setRejectVoidErr(error.message); return }
+    setRejectVoidModal(null)
     fetchAll()
   }
 
@@ -467,6 +647,17 @@ export default function PaymentsPage() {
   )
 
   const pendingLineSlips = lineSlips.filter(s => s.status === 'pending')
+
+  const filteredVoidPayments = useMemo(() => {
+    if (!voidSearch.trim()) return voidPayments
+    const q = voidSearch.toLowerCase()
+    return voidPayments.filter(p =>
+      p.invoices?.invoice_number?.toLowerCase().includes(q) ||
+      p.invoices?.tenants?.full_name?.toLowerCase().includes(q) ||
+      p.invoices?.rooms?.room_number?.toLowerCase().includes(q) ||
+      p.bank_reference?.toLowerCase().includes(q)
+    )
+  }, [voidPayments, voidSearch])
   function isHeadApproved(item) {
     return !!item.head_approved_at
   }
@@ -512,9 +703,10 @@ export default function PaymentsPage() {
       {/* Section tabs */}
       <div className="mb-5 flex border-b border-gray-200">
         {[
-          { key: 'payments',   label: 'การชำระเงิน',  count: pendingList.length },
-          { key: 'move_outs',  label: 'การย้ายออก',   count: actionableSettlements.length },
-          { key: 'line_slips', label: 'สลิป LINE',    count: pendingLineSlips.length },
+          { key: 'payments',      label: 'การชำระเงิน',       count: pendingList.length },
+          { key: 'move_outs',     label: 'การย้ายออก',        count: actionableSettlements.length },
+          { key: 'line_slips',    label: 'สลิป LINE',         count: pendingLineSlips.length },
+          { key: 'void_receipts', label: 'ขอยกเลิกใบเสร็จ',  count: voidPayments.filter(p => p.void_status === 'void_pending').length },
         ].map(t => (
           <button key={t.key} onClick={() => setSection(t.key)}
             className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
@@ -709,9 +901,29 @@ export default function PaymentsPage() {
                           <span className="rounded-full bg-orange-100 px-2 py-0.5 text-[10px] font-medium text-orange-700">
                             ค่าซ่อม
                           </span>
+                          {item.original_receipt_id && (
+                            <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-medium text-indigo-700">
+                              ใบแทน
+                            </span>
+                          )}
                           {bldgName && (
                             <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-medium text-blue-600">
                               {bldgName}
+                            </span>
+                          )}
+                          {item.void_status === 'void_pending' && (
+                            <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700">
+                              รอผู้บริหารอนุมัติ Void
+                            </span>
+                          )}
+                          {item.void_status === 'voided' && (
+                            <span className="rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-medium text-red-700">
+                              ยกเลิกแล้ว
+                            </span>
+                          )}
+                          {item.void_status === 'void_rejected' && (
+                            <span className="rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-medium text-red-700">
+                              ปฏิเสธ Void
                             </span>
                           )}
                         </div>
@@ -721,6 +933,9 @@ export default function PaymentsPage() {
                           ออกเมื่อ {formatThaiDateTime(item.issued_at)}
                           {item.issuer?.full_name ? ` · โดย ${item.issuer.full_name}` : ''}
                         </p>
+                        {item.void_status === 'void_rejected' && item.void_rejected_reason && (
+                          <p className="text-xs text-red-500">ปฏิเสธ: {item.void_rejected_reason}</p>
+                        )}
                         {tab === 'recorded' && item.recorder?.full_name && (
                           <p className="text-xs text-gray-400">
                             บันทึกโดย {item.recorder.full_name} · {formatThaiDateTime(item.recorded_at)}
@@ -762,10 +977,41 @@ export default function PaymentsPage() {
                           บันทึก
                         </Button>
                       )}
-                      {tab === 'recorded' && (
+                      {tab === 'recorded' && item._type !== 'receipt' && (
                         <span className="flex items-center gap-1 rounded-lg bg-green-50 px-3 py-1.5 text-xs font-medium text-green-700">
                           <BookCheck className="h-3.5 w-3.5" />
                           บันทึกแล้ว
+                        </span>
+                      )}
+                      {tab === 'recorded' && item._type === 'receipt' && !item.void_status && (
+                        <>
+                          <span className="flex items-center gap-1 rounded-lg bg-green-50 px-3 py-1.5 text-xs font-medium text-green-700">
+                            <BookCheck className="h-3.5 w-3.5" />
+                            บันทึกแล้ว
+                          </span>
+                          {canRecord && item.head_approved_at && !item.original_receipt_id && (
+                            <Button size="sm" variant="danger" icon={<Ban className="h-3.5 w-3.5" />}
+                              onClick={e => { e.stopPropagation(); openVoidModal(item) }}>
+                              ขอยกเลิก
+                            </Button>
+                          )}
+                        </>
+                      )}
+                      {tab === 'recorded' && item._type === 'receipt' && item.void_status === 'void_rejected' && canRecord && (
+                        <Button size="sm" variant="danger" icon={<RotateCcw className="h-3.5 w-3.5" />}
+                          onClick={e => { e.stopPropagation(); openVoidModal(item) }}>
+                          ขอ Void อีกครั้ง
+                        </Button>
+                      )}
+                      {tab === 'recorded' && item._type === 'receipt' && item.void_status === 'voided' && canRecord && (
+                        <Button size="sm" icon={<RotateCcw className="h-3.5 w-3.5" />}
+                          onClick={e => { e.stopPropagation(); openReplaceModal(item) }}>
+                          ออกใบเสร็จใหม่
+                        </Button>
+                      )}
+                      {tab === 'recorded' && item._type === 'receipt' && item.void_status === 'void_pending' && (
+                        <span className="flex items-center gap-1 rounded-lg bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-700">
+                          รออนุมัติ Void
                         </span>
                       )}
                     </div>
@@ -953,6 +1199,130 @@ export default function PaymentsPage() {
         </>
       )}
 
+      {/* ====== SECTION: ขอยกเลิกใบเสร็จ ====== */}
+      {section === 'void_receipts' && (
+        <>
+          <div className="mb-4 flex items-center gap-3">
+            <p className="text-sm text-gray-500 shrink-0">
+              {filteredVoidPayments.length} รายการ
+              {voidPayments.filter(p => p.void_status === 'void_pending').length > 0 && (
+                <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-xs text-amber-700">
+                  {voidPayments.filter(p => p.void_status === 'void_pending').length} รออนุมัติ
+                </span>
+              )}
+            </p>
+            <div className="relative w-64">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
+              <input
+                value={voidSearch}
+                onChange={e => setVoidSearch(e.target.value)}
+                placeholder="ค้นหาใบแจ้งหนี้ ห้อง ผู้เช่า..."
+                className="h-9 w-full rounded-lg border border-gray-300 pl-9 pr-8 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              {voidSearch && (
+                <button onClick={() => setVoidSearch('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
+                  <X className="h-4 w-4" />
+                </button>
+              )}
+            </div>
+          </div>
+
+          {filteredVoidPayments.length === 0 ? (
+            <EmptyState icon={Ban} title={voidSearch ? 'ไม่พบรายการที่ค้นหา' : 'ไม่มีรายการการชำระเงิน'} />
+          ) : (
+            <div className="flex flex-col gap-2">
+              {filteredVoidPayments.map(pmt => {
+                const inv = pmt.invoices
+                const bldgName = inv?.rooms?.buildings?.name
+                const isPending = pmt.void_status === 'void_pending'
+                const isVoided  = pmt.void_status === 'voided'
+                const isRejected = pmt.void_status === 'void_rejected'
+                return (
+                  <div key={pmt.id}
+                    className="flex items-center justify-between rounded-xl border border-gray-100 bg-white px-4 py-3.5 gap-4">
+                    <div className="flex-1 min-w-0 cursor-pointer" onClick={() => navigate(`/invoices/${inv?.id}`)}>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p className="text-sm font-semibold text-gray-900">
+                          {inv?.invoice_number}
+                          <span className="ml-2 font-bold">฿{Number(pmt.amount).toLocaleString('th-TH')}</span>
+                        </p>
+                        {bldgName && (
+                          <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-medium text-blue-600">
+                            {bldgName}
+                          </span>
+                        )}
+                        {isPending && (
+                          <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700">
+                            รออนุมัติ Void
+                          </span>
+                        )}
+                        {isVoided && (
+                          <span className="rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-medium text-red-700">
+                            ยกเลิกแล้ว
+                            {pmt.void_type === 'payment_reversal' ? ' — รอชำระใหม่' : ''}
+                          </span>
+                        )}
+                        {isRejected && (
+                          <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-medium text-gray-600">
+                            ปฏิเสธ Void
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs text-gray-500">
+                        ห้อง {inv?.rooms?.room_number} · {inv?.tenants?.full_name}
+                      </p>
+                      <p className="text-xs text-gray-400">
+                        ชำระ {formatThaiDate(pmt.paid_date)}
+                        {pmt.bank_reference ? ` · ${pmt.bank_reference}` : ''}
+                      </p>
+                      {isPending && pmt.void_reason && (
+                        <p className="text-xs text-amber-600">เหตุผล: {pmt.void_reason}
+                          {pmt.requester?.full_name ? ` · โดย ${pmt.requester.full_name}` : ''}
+                        </p>
+                      )}
+                      {isRejected && pmt.void_rejected_reason && (
+                        <p className="text-xs text-red-500">ปฏิเสธ: {pmt.void_rejected_reason}</p>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      {/* Accounting: request void */}
+                      {canRecord && !pmt.void_status && (
+                        <Button size="sm" variant="danger" icon={<Ban className="h-3.5 w-3.5" />}
+                          onClick={e => { e.stopPropagation(); openVoidPaymentModal(pmt) }}>
+                          ขอยกเลิก
+                        </Button>
+                      )}
+                      {/* Accounting: re-request after rejection */}
+                      {canRecord && isRejected && (
+                        <Button size="sm" variant="danger" icon={<RotateCcw className="h-3.5 w-3.5" />}
+                          onClick={e => { e.stopPropagation(); openVoidPaymentModal(pmt) }}>
+                          ขอใหม่
+                        </Button>
+                      )}
+                      {/* Manager: approve/reject */}
+                      {canApproveVoid && isPending && (
+                        <>
+                          <Button size="sm" icon={<CheckCircle className="h-3.5 w-3.5" />}
+                            loading={voidActionId === pmt.id}
+                            onClick={e => { e.stopPropagation(); handleApprovePaymentVoid(pmt.id) }}>
+                            อนุมัติ
+                          </Button>
+                          <Button size="sm" variant="danger" icon={<XCircle className="h-3.5 w-3.5" />}
+                            onClick={e => { e.stopPropagation(); openRejectVoidModal(pmt) }}>
+                            ปฏิเสธ
+                          </Button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </>
+      )}
+
       {/* Link LINE slip to invoice Modal */}
       <Modal
         open={!!linkModal}
@@ -1068,6 +1438,176 @@ export default function PaymentsPage() {
           <Textarea label="เหตุผล" required rows={3} value={rejectReason}
             onChange={e => { setRejectReason(e.target.value); setRejectErr('') }} />
           {rejectErr && <p className="text-sm text-red-600">{rejectErr}</p>}
+        </div>
+      </Modal>
+
+      {/* Void Invoice Payment Modal */}
+      <Modal open={!!voidPaymentModal} onClose={() => setVoidPaymentModal(null)} title="ขอยกเลิกใบเสร็จ"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setVoidPaymentModal(null)}>ยกเลิก</Button>
+            <Button variant="danger" loading={voidPaymentLoading} onClick={handleVoidPaymentRequest}>ส่งคำขอ</Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-4">
+          <div className="rounded-lg bg-gray-50 px-4 py-2.5 text-sm text-gray-700">
+            ใบแจ้งหนี้ <span className="font-semibold">{voidPaymentModal?.invoices?.invoice_number}</span>
+            {' '}— ฿{Number(voidPaymentModal?.amount ?? 0).toLocaleString('th-TH')}
+          </div>
+          <div>
+            <p className="mb-2 text-sm font-medium text-gray-700">ประเภทการยกเลิก <span className="text-red-500">*</span></p>
+            <div className="flex flex-col gap-2">
+              <label className="flex items-start gap-3 cursor-pointer">
+                <input type="radio" name="voidPaymentType" value="document_only"
+                  checked={voidPaymentType === 'document_only'}
+                  onChange={() => setVoidPaymentType('document_only')} className="mt-0.5" />
+                <span>
+                  <span className="block text-sm font-medium text-gray-800">เอกสารผิดพลาด (ยอดถูกต้อง)</span>
+                  <span className="block text-xs text-gray-500">ใบแจ้งหนี้ยังคงสถานะ "ชำระแล้ว" — ออกใบเสร็จใหม่ได้ทันที</span>
+                </span>
+              </label>
+              <label className="flex items-start gap-3 cursor-pointer">
+                <input type="radio" name="voidPaymentType" value="payment_reversal"
+                  checked={voidPaymentType === 'payment_reversal'}
+                  onChange={() => setVoidPaymentType('payment_reversal')} className="mt-0.5" />
+                <span>
+                  <span className="block text-sm font-medium text-gray-800">ยอดเงินผิดพลาด (ต้องรับชำระใหม่)</span>
+                  <span className="block text-xs text-red-600">ใบแจ้งหนี้จะกลับไปสถานะรอชำระ — ต้องรับชำระใหม่ก่อนออกใบเสร็จ</span>
+                </span>
+              </label>
+            </div>
+          </div>
+          <Textarea label="เหตุผลการยกเลิก" required rows={3} value={voidPaymentReason}
+            onChange={e => { setVoidPaymentReason(e.target.value); setVoidPaymentErr('') }}
+            placeholder="ระบุเหตุผลที่ต้องยกเลิกใบเสร็จ" />
+          {voidPaymentErr && <p className="text-sm text-red-600">{voidPaymentErr}</p>}
+        </div>
+      </Modal>
+
+      {/* Reject Void Modal */}
+      <Modal open={!!rejectVoidModal} onClose={() => setRejectVoidModal(null)} title="ปฏิเสธการขอยกเลิกใบเสร็จ"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setRejectVoidModal(null)}>ยกเลิก</Button>
+            <Button variant="danger" loading={rejectVoidLoading} onClick={handleRejectPaymentVoid}>ยืนยันปฏิเสธ</Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-3">
+          <div className="rounded-lg bg-gray-50 px-4 py-2.5 text-sm text-gray-700">
+            ใบแจ้งหนี้ <span className="font-semibold">{rejectVoidModal?.invoices?.invoice_number}</span>
+            <span className="ml-2 text-gray-500">เหตุผลที่ขอ: {rejectVoidModal?.void_reason}</span>
+          </div>
+          <Textarea label="เหตุผลการปฏิเสธ" required rows={3} value={rejectVoidReason}
+            onChange={e => { setRejectVoidReason(e.target.value); setRejectVoidErr('') }} />
+          {rejectVoidErr && <p className="text-sm text-red-600">{rejectVoidErr}</p>}
+        </div>
+      </Modal>
+
+      {/* Void Receipt Modal */}
+      <Modal open={!!voidModal} onClose={() => setVoidModal(null)} title="ขอยกเลิกใบเสร็จ"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setVoidModal(null)}>ยกเลิก</Button>
+            <Button variant="danger" loading={voidLoading} onClick={handleVoidRequest}>ส่งคำขอ</Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-4">
+          <div className="rounded-lg bg-gray-50 px-4 py-2.5 text-sm text-gray-700">
+            ใบเสร็จ <span className="font-semibold">{voidModal?.receipt_number}</span>
+            {' '}— ฿{Number(voidModal?.amount ?? 0).toLocaleString('th-TH', { minimumFractionDigits: 2 })}
+          </div>
+          {voidModal?.ref_table && voidModal.ref_table !== 'payments' && (
+            <div className="rounded-lg bg-red-50 px-4 py-2.5 text-sm text-red-700">
+              ขณะนี้ยังไม่รองรับการยกเลิกใบเสร็จประเภทนี้ ({voidModal.ref_table})
+            </div>
+          )}
+          {(!voidModal?.ref_table || voidModal?.ref_table === 'payments') && (
+            <>
+              <div>
+                <p className="mb-2 text-sm font-medium text-gray-700">ประเภทการยกเลิก <span className="text-red-500">*</span></p>
+                <div className="flex flex-col gap-2">
+                  <label className="flex items-start gap-3 cursor-pointer">
+                    <input type="radio" name="voidType" value="document_only" checked={voidType === 'document_only'}
+                      onChange={() => setVoidType('document_only')} className="mt-0.5" />
+                    <span>
+                      <span className="block text-sm font-medium text-gray-800">เอกสารผิดพลาด (ยอดถูกต้อง)</span>
+                      <span className="block text-xs text-gray-500">ใบแจ้งหนี้ยังคงสถานะ "ชำระแล้ว" — ออกใบเสร็จใหม่ได้ทันที</span>
+                    </span>
+                  </label>
+                  <label className="flex items-start gap-3 cursor-pointer">
+                    <input type="radio" name="voidType" value="payment_reversal" checked={voidType === 'payment_reversal'}
+                      onChange={() => setVoidType('payment_reversal')} className="mt-0.5" />
+                    <span>
+                      <span className="block text-sm font-medium text-gray-800">ยอดเงินผิดพลาด (ต้องรับชำระใหม่)</span>
+                      <span className="block text-xs text-red-600">ใบแจ้งหนี้จะกลับไปสถานะรอชำระ — ต้องรับชำระใหม่ก่อนออกใบเสร็จ</span>
+                    </span>
+                  </label>
+                </div>
+              </div>
+              <Textarea label="เหตุผลการยกเลิก" required rows={3} value={voidReason}
+                onChange={e => { setVoidReason(e.target.value); setVoidErr('') }}
+                placeholder="ระบุเหตุผลที่ต้องยกเลิกใบเสร็จ" />
+              {voidErr && <p className="text-sm text-red-600">{voidErr}</p>}
+            </>
+          )}
+        </div>
+      </Modal>
+
+      {/* Issue Replacement Receipt Modal */}
+      <Modal open={!!replaceModal} onClose={() => setReplaceModal(null)} title="ออกใบเสร็จแทน"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setReplaceModal(null)}>ยกเลิก</Button>
+            <Button loading={replaceLoading} onClick={handleIssueReplacement}>ออกใบเสร็จใหม่</Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-3">
+          <div className="rounded-lg bg-gray-50 px-4 py-2.5 text-sm text-gray-700">
+            อ้างอิงใบเสร็จเดิม: <span className="font-semibold">{replaceModal?.receipt_number}</span>
+            {replaceModal?.void_type === 'payment_reversal' && (
+              <span className="ml-2 rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-medium text-red-700">ยอดเงินผิด</span>
+            )}
+          </div>
+          {replaceModal?.void_type === 'payment_reversal' && (
+            <div>
+              <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                เลือกการชำระที่ถูกต้อง <span className="text-red-500">*</span>
+              </label>
+              {replacePayments.length === 0 ? (
+                <p className="text-sm text-amber-600">ยังไม่มีการชำระที่ได้รับอนุมัติสำหรับใบแจ้งหนี้นี้ — กรุณารับชำระใหม่ก่อน</p>
+              ) : (
+                <select value={replacePaymentId} onChange={e => setReplacePaymentId(e.target.value)}
+                  className="h-9 w-full rounded-lg border border-gray-300 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                  <option value="">-- เลือกการชำระ --</option>
+                  {replacePayments.map(p => (
+                    <option key={p.id} value={p.id}>
+                      ฿{Number(p.amount).toLocaleString('th-TH')} · {p.paid_date}{p.bank_reference ? ` · ${p.bank_reference}` : ''}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+          )}
+          <div>
+            <label className="mb-1.5 block text-sm font-medium text-gray-700">ยอดเงิน <span className="text-red-500">*</span></label>
+            <input type="number" value={replaceAmount} onChange={e => setReplaceAmount(e.target.value)} min="0" step="0.01"
+              className="h-9 w-full rounded-lg border border-gray-300 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
+          <div>
+            <label className="mb-1.5 block text-sm font-medium text-gray-700">รายการ</label>
+            <input value={replaceDesc} onChange={e => setReplaceDesc(e.target.value)}
+              className="h-9 w-full rounded-lg border border-gray-300 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
+          <div>
+            <label className="mb-1.5 block text-sm font-medium text-gray-700">ชื่อผู้ชำระ</label>
+            <input value={replacePayer} onChange={e => setReplacePayer(e.target.value)}
+              className="h-9 w-full rounded-lg border border-gray-300 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
+          {replaceErr && <p className="text-sm text-red-600">{replaceErr}</p>}
         </div>
       </Modal>
     </div>

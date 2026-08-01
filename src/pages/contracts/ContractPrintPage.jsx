@@ -202,7 +202,40 @@ export default function ContractPrintPage() {
   return (
     <div className="min-h-screen bg-slate-100 py-6 print:bg-white print:py-0">
       <style>{`
-        @page { size: A4; margin: 14mm 12mm; }
+        @page {
+          size: A4;
+          margin: 10mm 12mm 16mm 12mm;
+          @top-left   { content: ''; }
+          @top-center { content: ''; }
+          @top-right  { content: ''; }
+          @bottom-left {
+            content: 'สัญญาเช่าห้องชุด';
+            font-size: 8pt;
+            color: #94a3b8;
+            font-family: 'Sarabun', sans-serif;
+            border-top: 0.5pt solid #e2e8f0;
+            padding-top: 4pt;
+            vertical-align: top;
+          }
+          @bottom-center {
+            content: 'หน้า ' counter(page) ' / ' counter(pages);
+            font-size: 8.5pt;
+            color: #475569;
+            font-family: 'Sarabun', sans-serif;
+            border-top: 0.5pt solid #e2e8f0;
+            padding-top: 4pt;
+            vertical-align: top;
+          }
+          @bottom-right {
+            content: '${c.contract_number}';
+            font-size: 8pt;
+            color: #94a3b8;
+            font-family: 'Sarabun', sans-serif;
+            border-top: 0.5pt solid #e2e8f0;
+            padding-top: 4pt;
+            vertical-align: top;
+          }
+        }
         @media print {
           .no-print { display: none !important; }
           .print-page { box-shadow: none !important; margin: 0 !important; width: 100% !important; padding: 0 !important; }
