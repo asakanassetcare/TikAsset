@@ -3,9 +3,26 @@ import { supabase } from '../lib/supabase'
 
 const AuthContext = createContext(null)
 
+const NO_ACCESS = 'บัญชีนี้ยังไม่ได้รับสิทธิ์เข้าใช้งาน กรุณาติดต่อผู้ดูแลระบบ'
+const DISABLED = 'บัญชีนี้ถูกปิดใช้งาน กรุณาติดต่อผู้ดูแลระบบ'
+
+// Supabase ส่ง error กลับมาใน URL หลัง Google OAuth (เช่น signup_disabled เมื่ออีเมลไม่มีบัญชี)
+// ต้องอ่านตอนโหลดครั้งแรก ก่อน RequireAuth redirect ไป /login แล้ว query/hash หายไป
+function readOAuthError() {
+  const params = new URLSearchParams(window.location.search)
+  const hash = new URLSearchParams(window.location.hash.replace(/^#/, ''))
+  const code = params.get('error_code') || hash.get('error_code')
+  const err = params.get('error') || hash.get('error')
+  if (!code && !err) return ''
+  window.history.replaceState(null, '', window.location.pathname)
+  if (code === 'signup_disabled' || code === 'user_banned') return NO_ACCESS
+  return 'เข้าสู่ระบบไม่สำเร็จ กรุณาลองใหม่'
+}
+
 export function AuthProvider({ children }) {
   const [session, setSession] = useState(undefined) // undefined = loading
   const [profile, setProfile] = useState(undefined) // undefined = not yet fetched
+  const [authError, setAuthError] = useState(readOAuthError)
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -22,14 +39,17 @@ export function AuthProvider({ children }) {
     return () => subscription.unsubscribe()
   }, [])
 
+  // ไม่มี profile หรือ is_active = false → sign out (Google ยืนยันตัวตนได้ทุกบัญชี
+  // ต้องมี profile ที่ active ถึงจะเข้าได้)
   async function fetchProfile(userId) {
     const { data } = await supabase
       .from('profiles')
       .select('*')
       .eq('id', userId)
-      .single()
+      .maybeSingle()
     setProfile(data)
-    if (data?.is_active === false) {
+    if (!data || data.is_active === false) {
+      setAuthError(!data ? NO_ACCESS : DISABLED)
       await supabase.auth.signOut()
     }
   }
@@ -52,6 +72,18 @@ export function AuthProvider({ children }) {
     return { error: null }
   }
 
+  async function signInWithGoogle(redirectPath = '/') {
+    setAuthError('')
+    return supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: {
+        redirectTo: window.location.origin + redirectPath,
+        // ให้เลือกบัญชีทุกครั้ง ไม่งั้น Google ใช้บัญชีเดิมอัตโนมัติจนเปลี่ยนบัญชีไม่ได้
+        queryParams: { prompt: 'select_account' },
+      },
+    })
+  }
+
   async function signOut() {
     await supabase.auth.signOut()
   }
@@ -66,7 +98,9 @@ export function AuthProvider({ children }) {
     profile,
     role: profile?.is_active === false ? null : (profile?.role ?? null),
     loading: session === undefined || (session !== null && profile === undefined),
+    authError,
     signIn,
+    signInWithGoogle,
     signOut,
     updatePassword,
     refetchProfile: () => session?.user && fetchProfile(session.user.id),
